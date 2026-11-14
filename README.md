@@ -5,7 +5,7 @@
 - **Common Lisp** over Swank (SLIME's server). Available now.
 - **Clojure / ClojureScript** over nREPL. Coming soon.
 
-Website: <https://megajess.github.io/pairens/>
+Website: <https://pairens.dev>
 
 ## What it does
 
