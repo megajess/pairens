@@ -53,7 +53,16 @@
   main { max-width: 760px; margin: 0 auto; padding: 56px 16px 72px; }
   h1 { font-size: 2.6rem; line-height: 1.1; margin: 0 0 12px; letter-spacing: -0.02em; display: flex; align-items: center; gap: 14px; }
   h1 .mark { width: 0.95em; height: 0.95em; flex: none; }
-  h1 .ai { color: var(--accent); }
+  h1 .ai, h1 .cursor { color: var(--accent); }
+  /* "pAIrens: _" with a blinking cursor, like a prompt waiting for input. */
+  /* The cursor sits at the bottom of the line, so it stays solid rather than
+     taking the fade; it needs its own fill because .word clips to text. */
+  h1 .cursor {
+    -webkit-text-fill-color: var(--accent); color: var(--accent);
+    animation: cursor-blink 1.06s steps(1, end) infinite;
+  }
+  @keyframes cursor-blink { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { h1 .cursor { animation: none; } }
   /* Logo text: each color holds its usual shade for the top half, then fades
      toward the page background: to a light warm grey in light mode and a dark
      warm grey in dark mode, each a step away from the background itself. */
@@ -149,7 +158,9 @@
   /* Terminal-mode details */
   [data-theme="terminal"] body { text-shadow: 0 0 5px rgba(77, 255, 122, 0.45); }
   [data-theme="terminal"] h1 { letter-spacing: 0; }
-  [data-theme="terminal"] h1 .word, [data-theme="terminal"] h1 .ai { text-shadow: none; }
+  [data-theme="terminal"] h1 .word, [data-theme="terminal"] h1 .ai,
+  [data-theme="terminal"] h1 .cursor { text-shadow: none; }
+  [data-theme="terminal"] h1 .cursor { -webkit-text-fill-color: var(--fg); color: var(--fg); margin-left: -0.35em; }
   [data-theme="terminal"] h1 .word { filter: drop-shadow(0 0 6px rgba(77, 255, 122, 0.4)); }
   [data-theme="terminal"] h1 .mark { filter: invert(1) sepia(1) saturate(6) hue-rotate(75deg) brightness(1.05) drop-shadow(0 0 6px rgba(77, 255, 122, 0.45)); }
   [data-theme="terminal"] .button, [data-theme="terminal"] .card, [data-theme="terminal"] pre,
@@ -187,7 +198,7 @@
   </ul>
 </div>
 <main>
-  <h1><img class="mark" src="favicon.svg" alt=""><span class="word">p<span class="ai">AI</span>rens</span></h1>
+  <h1><img class="mark" src="favicon.svg" alt=""><span class="word">p<span class="ai">AI</span>rens<span aria-hidden="true">: <span class="cursor">_</span></span></span></h1>
   <p class="lede">A Lisp REPL you and Claude share. pAIrens is a mod for Claude Code that puts a REPL beside the chat, connected to your live Lisp image. You both use it, and each of you sees what the other did.</p>
 
   <div class="buttons">
