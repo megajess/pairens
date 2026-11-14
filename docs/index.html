@@ -8,6 +8,15 @@
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://pairens.dev/">
+<meta property="og:title" content="pAIrens: a Lisp REPL you and Claude share">
+<meta property="og:description" content="pAIrens is a Claude Code mod: a Lisp REPL beside the chat, connected to your live image, that you and Claude both use.">
+<meta property="og:image" content="https://pairens.dev/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The pAIrens (λ_) mark beside the name pAIrens and the line: A Lisp REPL you and Claude share.">
+<meta name="twitter:card" content="summary_large_image">
 <style>
   :root {
     --bg: #fbfaf7; --fg: #1d1b18; --muted: #6b665e; --line: #e4e0d8;
@@ -25,7 +34,8 @@
     font: 17px/1.6 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
   }
   main { max-width: 760px; margin: 0 auto; padding: 56px 16px 72px; }
-  h1 { font-size: 2.6rem; line-height: 1.1; margin: 0 0 12px; letter-spacing: -0.02em; }
+  h1 { font-size: 2.6rem; line-height: 1.1; margin: 0 0 12px; letter-spacing: -0.02em; display: flex; align-items: center; gap: 14px; }
+  h1 .mark { width: 0.95em; height: 0.95em; flex: none; }
   h1 .ai { color: var(--accent); }
   h2 { font-size: 1.3rem; margin: 48px 0 12px; }
   .lede { font-size: 1.2rem; color: var(--muted); margin: 0 0 28px; }
@@ -57,7 +67,7 @@
 </head>
 <body>
 <main>
-  <h1>p<span class="ai">AI</span>rens</h1>
+  <h1><img class="mark" src="favicon.svg" alt=""><span>p<span class="ai">AI</span>rens</span></h1>
   <p class="lede">A Lisp REPL you and Claude share. pAIrens is a mod for Claude Code that puts a REPL beside the chat, connected to your live Lisp image. You both use it, and each of you sees what the other did.</p>
 
   <div class="buttons">
