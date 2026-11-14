@@ -11,7 +11,12 @@ Website: <https://pairens.dev>
 
 - **A REPL pane beside the chat.** The input stays pinned at the bottom, and the history shows output, values and errors. Each session (tab) keeps its own current package and `*`, `**`, `***`, all in one shared image.
 - **Or in its own browser window.** `/pairens-browser` opens the same REPL as a local web page: a real code editor with Lisp highlighting, paren matching and ↑/↓ input history, plus normal scrolling and copy/paste. It shares one history with the pane, and the page runs only on your machine (`127.0.0.1`), protected by a private key.
-- **Ask Claude from your REPL.** `(pairens:claude "why is this nil?")` returns right away, and Claude's answer shows up in the REPL. To send a value along: `(pairens:claude "explain this" (my-fn 3))`. This also works from SLIME or Sly connected to the same image, where the reply prints as `;;` comments.
+- **Ask Claude right from the REPL.** Start a line with `pairens:` in the pane or the browser page:
+  ```
+  pairens: why is this nil?
+  ```
+  It goes to Claude as plain text (no quotes needed, apostrophes and parens are fine), and Claude's answer shows up in the REPL.
+- **Or from Lisp code and SLIME.** `(pairens:claude "why is this nil?")` does the same from any REPL connected to the image, SLIME and Sly included, where the reply prints as `;;` comments. To send a value along: `(pairens:claude "explain this" (my-fn 3))`.
 - **Claude uses the REPL too.** It inspects and evaluates code in your running image, and every eval shows in the pane marked `✻`. Long-running work goes into a session of Claude's own.
 - **Debugger with restarts.** When a Lisp thread hits an error (a game's main loop, a worker), pAIrens shows the condition, its restarts (`RETRY`, `ABORT`, your own) and a backtrace. You pick one, or let Claude.
 - **You choose how Claude's evals and restarts run** (`/pairens-mode`):
@@ -48,7 +53,7 @@ In the Claude desktop app:
   - Let pAIrens start one: **Launch SBCL** in the pane, or `/pairens-launch`. This needs SBCL plus Quicklisp with Swank available.
   - Start Swank yourself, e.g. `(swank:create-server :port 4005 :dont-close t)`, then connect with **Connect** in the pane or `/pairens-connect 4005`.
 
-  `(pairens:claude …)` replies arrive fastest on SBCL. Other implementations work, but poll for questions instead.
+  Questions asked with `(pairens:claude …)` from SLIME are picked up fastest on SBCL. Other implementations work, but poll for questions instead.
 
 ## Use
 

@@ -1,7 +1,7 @@
 // pAIrens browser page: a client of the helper's v1 API.
 // GET /api/v1/events streams state; commands are POSTs with the key.
 
-import { createEditor, highlightLisp, renderMarkdown } from '/vendor/editor.js'
+import { createEditor, highlightLisp, messageText, renderMarkdown } from '/vendor/editor.js'
 
 const key = new URLSearchParams(location.search).get('key') ?? ''
 const $ = sel => document.querySelector(sel)
@@ -295,7 +295,7 @@ function renderHistory(jump = false) {
   if (!list.length) {
     const empty = document.createElement('div')
     empty.className = 'empty'
-    empty.textContent = `Nothing evaluated in "${state.tab}" yet. Try (pairens:claude "hello!")`
+    empty.textContent = `Nothing evaluated in "${state.tab}" yet. Try typing: pairens: hello!`
     h.appendChild(empty)
   }
   $('#prompt').textContent = `${currentPackage()}>`
@@ -321,7 +321,9 @@ const editor = createEditor({
   onSubmit: code => {
     const mine = submitted.get(state.tab) ?? []
     submitted.set(state.tab, [...mine.filter(t => t !== code), code].slice(-20))
-    api('eval', { session: state.tab, code }).catch(report)
+    // "pairens: <text>" is a question for Claude, not Lisp.
+    const question = messageText(code)
+    ;(question !== null ? api('ask', { session: state.tab, text: question }) : api('eval', { session: state.tab, code })).catch(report)
     scrollToEnd(true)
   },
 })

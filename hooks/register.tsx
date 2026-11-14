@@ -37,7 +37,11 @@ const debugsAtom = atom({ plugin: 'pairens', key: 'debugs' } as const, [] as Pai
 // ---------------------------------------------------------------------------
 // The helper process
 
-type ClaudeRequest = { id: string; prompt: string; value: string; package: string; session: string }
+/** `via: 'prefix'` when typed as "pairens: <text>" in the pane or a client. */
+type ClaudeRequest = { id: string; prompt: string; value: string; package: string; session: string; via?: 'prefix' }
+
+/** A line for Claude rather than Lisp: `pairens:` then a space or newline. */
+const MESSAGE_PREFIX = /^\s*pairens:(?=\s)/i
 
 type HelperEvent =
   | { type: 'ready'; socket: string; url: string | null }
@@ -232,7 +236,7 @@ async function askClaude($: Engine, req: ClaudeRequest) {
       ? `the person's own editor REPL (connected to the same Lisp image), package ${req.package}`
       : `the pAIrens REPL, session "${req.session}", package ${req.package}`
   const text = [
-    `[pAIrens ${req.id}] Asked from ${where} with (pairens:claude ...):`,
+    `[pAIrens ${req.id}] Asked from ${where} ${req.via === 'prefix' ? 'by typing "pairens: …"' : 'with (pairens:claude ...)'}:`,
     '',
     req.prompt,
     ...(req.value ? ['', `Value passed along: ${req.value}`] : []),
@@ -382,7 +386,7 @@ export const register: Register = on => {
     })
     await $.tool.register({
       name: 'history',
-      description: "Read recent pAIrens REPL history: what the person and you evaluated, with output, values and errors, plus (pairens:claude ...) questions.",
+      description: "Read recent pAIrens REPL history: what the person and you evaluated, with output, values and errors, plus questions the person asked you (typed as 'pairens: …' or with (pairens:claude ...)).",
       inputSchema: {
         type: 'object',
         properties: {
@@ -668,9 +672,12 @@ export const register: Register = on => {
     const evalHere = (code: string) => {
       if (!code.trim()) return
       void update($, scrollBackAtom, () => 0)
-      void helper($, '/eval', { session: selected, code, origin: 'user', timeoutMs: 0 }).catch(err =>
-        $.ui.toast(`pAIrens: ${String(err)}`),
-      )
+      // "pairens: <text>" is a question for Claude, not Lisp.
+      const question = MESSAGE_PREFIX.test(code) ? code.replace(MESSAGE_PREFIX, '').trim() : null
+      const sent = question
+        ? helper($, '/api/v1/ask', { session: selected, text: question })
+        : helper($, '/eval', { session: selected, code, origin: 'user', timeoutMs: 0 })
+      void sent.catch(err => $.ui.toast(`pAIrens: ${String(err)}`))
     }
 
     // Text in the pane can't be selected, so entries carry copy/edit buttons.
@@ -737,7 +744,7 @@ export const register: Register = on => {
       <Box flexDirection="column" height={bodyRows}>
         {/* history: fills the room above the editor, newest at the bottom */}
         <Box key="history" flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden" justifyContent="flex-end" gap={1}>
-          {rows.length ? rows : [<Text key="empty" dimColor>Nothing evaluated in "{selected}" yet. Try (pairens:claude "hello!")</Text>]}
+          {rows.length ? rows : [<Text key="empty" dimColor>Nothing evaluated in "{selected}" yet. Try typing: pairens: hello!</Text>]}
         </Box>
 
         {/* pinned: debugger, editor, then status and controls */}

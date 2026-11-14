@@ -329,6 +329,17 @@ async function waitFor(job, timeoutMs) {
   return Promise.race([job.done, sleep(timeoutMs).then(() => job.entry)]).then(e => ({ ...e }))
 }
 
+let askSeq = 0
+
+/** A question typed in a client with the `pairens:` prefix: hand it to the mod. */
+function ask({ session = 'user', text }) {
+  if (typeof text !== 'string' || !text.trim()) throw new Error('nothing to ask')
+  const pkg = [...entries].reverse().find(x => x.session === session && x.package)?.package ?? 'COMMON-LISP-USER'
+  const request = { id: `ask${Date.now().toString(36)}${++askSeq}`, prompt: text.trim(), value: '', package: pkg, session, via: 'prefix' }
+  emit({ type: 'claude-request', request })
+  return { sent: true, id: request.id }
+}
+
 function restart({ id, index }) {
   const d = debugs.get(id)
   if (!d) throw new Error(`no debugger ${id} (it may have been resolved already)`)
@@ -367,6 +378,7 @@ const api = {
   'POST /api/v1/connect': async ({ host, port }) => connect(host || '127.0.0.1', Number(port) || 4005),
   'POST /api/v1/launch': async () => launch(),
   'POST /api/v1/disconnect': async () => disconnect(),
+  'POST /api/v1/ask': async body => ask(body),
   'POST /api/v1/restart': async body => restart(body),
   'POST /api/v1/sessions': async () => sessions(),
 }

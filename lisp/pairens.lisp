@@ -6,6 +6,9 @@
 ;;;;   (pairens:claude "why is this nil?")          ; ask Claude, reply prints later
 ;;;;   (pairens:claude "explain" (my-fn 3))         ; ...with a value attached
 ;;;;
+;;;; (In the pAIrens pane or browser page you can also just type
+;;;;  `pairens: why is this nil?` -- no quotes; the page sends it, not Lisp.)
+;;;;
 ;;;; plus the entry points the helper calls: REX-EVAL (evaluate in a named
 ;;;; pAIrens session), READ-ONLY-CODE-P (the read-only mode's check),
 ;;;; TAKE-OUTBOX (the helper's long poll for CLAUDE calls) and DELIVER (print
