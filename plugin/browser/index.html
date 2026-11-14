@@ -20,19 +20,22 @@
         <span class="label">Claude</span>
         <button data-mode="ask" title="You approve each eval Claude wants to run">ask</button>
         <button data-mode="auto" title="Claude evals freely; every eval shows here">auto</button>
-        <button data-mode="read-only" title="Claude may only inspect (describe, documentation, apropos…)">read-only</button>
+        <button data-mode="read-only" title="Claude may only inspect (describe, documentation, apropos; in Clojure doc, source, dir…)">read-only</button>
       </div>
     </header>
 
     <section id="connect" class="connect" hidden>
-      <button id="launch" class="primary">Launch SBCL</button>
+      <button id="launch-common-lisp" class="primary" title="Start SBCL with Swank">Launch SBCL</button>
+      <button id="launch-clojure" title="Start Clojure with nREPL (Leiningen for project.clj, else the Clojure CLI)">Launch Clojure</button>
       <form id="connect-form">
-        <input id="connect-addr" placeholder="4005 or host:port" aria-label="Swank address">
+        <input id="connect-addr" placeholder="port, host:port, or nrepl 7888" aria-label="Swank or nREPL address">
         <button type="submit">Connect</button>
       </form>
     </section>
 
     <nav class="tabs" id="tabs" aria-label="Sessions"></nav>
+
+    <section id="cljs" class="cljs" hidden aria-label="ClojureScript"></section>
 
     <section id="debugs" class="debugs" aria-live="polite"></section>
 

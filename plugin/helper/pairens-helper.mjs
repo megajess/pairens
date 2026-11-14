@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// pAIrens helper: holds the Swank connection and the shared REPL history, and
-// serves the pAIrens API.
+// pAIrens helper: holds the connection to the image (Common Lisp over Swank,
+// or Clojure over nREPL) and the shared REPL history, and serves the pAIrens
+// API.
 //
 //   node pairens-helper.mjs --socket /tmp/pairens-x.sock --cwd <project>
-//        [--lisp <pairens.lisp>] [--job-start N] [--http-port 4747]
+//        [--lisp <pairens.lisp>] [--clj <pairens.clj>] [--job-start N] [--http-port 4747]
 //
 // Two listeners:
 //   * a Unix socket (--socket) for the mod: every route, no key.
@@ -33,7 +34,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 
-import { SwankClient } from './swank.mjs'
+import { SwankBackend, NreplBackend } from './backends.mjs'
 import { str } from './sexp.mjs'
 
 const API_VERSION = 1
@@ -48,8 +49,11 @@ const HERE = path.dirname(new URL(import.meta.url).pathname)
 const SOCKET = args.socket
 const CWD = args.cwd ?? process.cwd()
 const LISP_FILE = args.lisp ?? path.join(HERE, '..', 'lisp', 'pairens.lisp')
+const CLJ_FILE = args.clj ?? path.join(HERE, '..', 'clojure', 'pairens.clj')
 const BROWSER_DIR = path.join(HERE, '..', 'browser')
 const PORT_FILE = path.join(CWD, '.swank-port')
+const NREPL_PORT_FILES = [path.join(CWD, '.nrepl-port'), path.join(CWD, '.shadow-cljs', 'nrepl.port')]
+const NREPL_VERSION = '1.3.1'
 const HOME_DIR = path.join(os.homedir(), '.pairens')
 const LOG_DIR = path.join(HOME_DIR, 'logs')
 const ENDPOINT_FILE = path.join(HOME_DIR, 'endpoint.json')
@@ -102,8 +106,18 @@ function snapshot() {
 // ---------------------------------------------------------------------------
 // Connection state
 
-let swank = null
-let status = { connected: false, host: null, port: null, impl: null, launching: false, error: null }
+/** The connected backend (backends.mjs), or null. */
+let conn = null
+let status = {
+  connected: false,
+  host: null,
+  port: null,
+  impl: null,
+  protocol: null,
+  language: null,
+  launching: false,
+  error: null,
+}
 let pollGeneration = 0
 
 const setStatus = patch => {
@@ -122,67 +136,206 @@ function dropDebugs() {
 
 let outputSeq = 0
 
-async function connect(host = '127.0.0.1', port = 4005) {
-  if (swank) swank.close()
-  dropDebugs()
-  const client = new SwankClient()
-  client.on('log', log)
-  client.on('output', text => {
+const readPort = file => {
+  try {
+    return Number(fs.readFileSync(file, 'utf8').trim()) || null
+  } catch {
+    return null
+  }
+}
+
+/** Which protocol to try first on PORT: Swank's ports, else nREPL. */
+function protocolsFor(port) {
+  return port === 4005 || port === readPort(PORT_FILE) ? ['swank', 'nrepl'] : ['nrepl', 'swank']
+}
+
+function withTimeout(promise, ms, what) {
+  let timer
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`${what} timed out`)), ms))),
+  ])
+}
+
+/** Opens a backend of KIND on HOST:PORT; resolves with it once it's ready. */
+async function open(kind, host, port) {
+  const backend = kind === 'nrepl' ? new NreplBackend({ cljFile: CLJ_FILE }) : new SwankBackend({ lispFile: LISP_FILE })
+  backend.on('log', log)
+  try {
+    const { impl } = await withTimeout(backend.connect(host, port), 30_000, `connecting to ${kind} on ${host}:${port}`)
+    return { backend, impl }
+  } catch (err) {
+    backend.close()
+    throw err
+  }
+}
+
+/**
+ * Connects to the Swank or nREPL server on HOST:PORT. PROTOCOL ('swank' or
+ * 'nrepl') skips guessing; without it pAIrens tries the likelier one first.
+ */
+async function connect(host = '127.0.0.1', port = 4005, protocol) {
+  if (conn) disconnect({ byUser: false })
+  const order = protocol === 'swank' || protocol === 'nrepl' ? [protocol] : protocolsFor(port)
+  let opened = null
+  const errors = []
+  for (const kind of order) {
+    try {
+      opened = await open(kind, host, port)
+      break
+    } catch (err) {
+      errors.push(`${kind}: ${err.message}`)
+      if (/web server/.test(err.message)) break // not Swank either
+    }
+  }
+  if (!opened) {
+    const refused = errors.every(e => /ECONNREFUSED/.test(e))
+    const web = errors.some(e => /web server/.test(e))
+    // Point at the REPL ports this folder's tools wrote, if any.
+    const known = [
+      ...NREPL_PORT_FILES.map(f => [f, readPort(f), 'nREPL']),
+      [PORT_FILE, readPort(PORT_FILE), 'Swank'],
+    ].filter(([, p]) => p && p !== port)
+    const hint = known.length
+      ? ` This folder's REPL port: ${known.map(([f, p, kind]) => `${p} (${kind}, from ${path.relative(CWD, f)})`).join(', ')}.`
+      : ' A shadow-cljs project writes its nREPL port to .shadow-cljs/nrepl.port, other Clojure tools to .nrepl-port, and pAIrens\'s SBCL to .swank-port.'
+    throw new Error(
+      (web
+        ? `${host}:${port} is a web server, not a Swank or nREPL server (for shadow-cljs, that's the app page or the dashboard, not its nREPL).`
+        : refused
+          ? `Nothing is listening on ${host}:${port}.`
+          : `No Swank or nREPL server answered on ${host}:${port}; something else is listening there (a web page's port, for example).`) + hint,
+    )
+  }
+  const { backend, impl } = opened
+  backend.on('output', text => {
     // Coalesce consecutive output into one entry of the "user" session.
     const last = entries[entries.length - 1]
     if (last && last.kind === 'output' && last.session === 'user') upsertEntry({ ...last, text: last.text + text })
     else upsertEntry({ id: `out-${Date.now()}-${++outputSeq}`, session: 'user', origin: 'lisp', kind: 'output', text, at: Date.now() })
   })
-  client.on('debug', d => {
+  backend.on('debug', d => {
     const debug = { id: `d${d.thread}-${d.level}`, ...d, at: Date.now() }
     debugs.set(debug.id, debug)
     emit({ type: 'debug', debug })
     broadcast('debug', debug)
   })
-  client.on('debug-return', ({ thread, level }) => {
+  backend.on('debug-return', ({ thread, level }) => {
     const id = `d${thread}-${level}`
     if (!debugs.delete(id)) return
     emit({ type: 'debug-done', id })
     broadcast('debug-done', { id })
   })
-  client.on('close', () => {
-    if (swank !== client) return
-    swank = null
+  backend.on('cljs', map => setStatus({ cljsSessions: map }))
+  backend.on('close', () => {
+    if (conn !== backend) return
+    conn = null
     dropDebugs()
-    setStatus({ connected: false, impl: null, error: 'connection closed' })
+    setStatus({ connected: false, impl: null, protocol: null, language: null, error: 'connection closed', shadow: null, cljsSessions: {}, compiling: null })
   })
-  await client.connect(host, port)
-  swank = client
-  const loaded = await client.rex(`(cl:progn (cl:load ${str(LISP_FILE)}) (cl:list (cl:lisp-implementation-type) (cl:lisp-implementation-version)))`)
-  const impl = Array.isArray(loaded) ? loaded.join(' ') : 'Common Lisp'
-  setStatus({ connected: true, host, port, impl, error: null, disconnectedByUser: false })
-  pollOutbox(client, ++pollGeneration)
+  conn = backend
+  setStatus({
+    connected: true,
+    host,
+    port,
+    impl,
+    protocol: backend.protocol,
+    language: backend.language,
+    error: null,
+    disconnectedByUser: false,
+  })
+  pollOutbox(backend, ++pollGeneration)
+  if (backend.protocol === 'nrepl') watchShadow(backend, pollGeneration)
   return status
 }
 
-/** Drops the Swank connection on purpose; the Lisp image keeps running. */
-function disconnect() {
-  const client = swank
-  swank = null // the client's close handler sees it is no longer current
-  pollGeneration++
-  client?.close()
-  dropDebugs()
-  setStatus({ connected: false, host: null, port: null, impl: null, launching: false, error: null, disconnectedByUser: true })
-  return status
+// ---------------------------------------------------------------------------
+// ClojureScript through shadow-cljs
+
+/** Refreshes status.shadow (builds, watches, connected JS runtimes). */
+async function refreshShadow(backend = conn) {
+  if (!backend || backend.protocol !== 'nrepl') return null
+  try {
+    const info = await backend.shadow()
+    const next = info.shadow ? { builds: info.builds, watching: info.watching, runtimes: info.runtimes } : null
+    if (JSON.stringify(next) !== JSON.stringify(status.shadow ?? null) && conn === backend) setStatus({ shadow: next })
+    return next
+  } catch (err) {
+    log(`shadow-cljs status failed: ${err.message}`)
+    return status.shadow ?? null
+  }
 }
 
-/** Long-polls the image for (pairens:claude ...) calls while connected. */
-async function pollOutbox(client, generation) {
-  while (swank === client && generation === pollGeneration && client.connected) {
+/** While connected to a shadow-cljs server, keeps its status current. */
+async function watchShadow(backend, generation) {
+  const first = await refreshShadow(backend)
+  if (!first) return
+  while (conn === backend && generation === pollGeneration && backend.connected) {
+    await sleep(5000)
+    await refreshShadow(backend)
+  }
+}
+
+/**
+ * Switches SESSION to ClojureScript in shadow-cljs BUILD: starts watching the
+ * build if needed, then evaluates (shadow.cljs.devtools.api/repl :build) there
+ * as an ordinary eval, so it shows in the history. :cljs/quit switches back.
+ */
+async function startCljs({ session = 'user', build, origin = 'user', timeoutMs = 0 }) {
+  if (!conn || conn.protocol !== 'nrepl') throw new Error('ClojureScript needs a connection to a shadow-cljs nREPL server')
+  const info = await refreshShadow()
+  if (!info) throw new Error('this nREPL server is not shadow-cljs; ClojureScript works through shadow-cljs')
+  const wanted = String(build ?? '').replace(/^:/, '')
+  const chosen =
+    wanted || (info.watching.length === 1 ? info.watching[0] : info.builds.length === 1 ? info.builds[0] : '')
+  if (!chosen) throw new Error(`which build? shadow-cljs.edn has: ${info.builds.join(', ')}`)
+  if (!info.builds.includes(chosen)) throw new Error(`no build :${chosen}; shadow-cljs.edn has: ${info.builds.join(', ')}`)
+  if (!info.watching.includes(chosen)) {
+    setStatus({ compiling: chosen })
     try {
-      const requests = await client.rex('(pairens::take-outbox 20)', { pkg: 'PAIRENS' })
-      for (const r of requests ?? []) {
-        const [id, prompt, value, pkg, session] = r
-        emit({ type: 'claude-request', request: { id, prompt, value, package: pkg, session } })
-      }
-      if (!requests?.length) await sleep(250) // non-SBCL images return at once
+      await conn.watch(chosen)
+    } finally {
+      setStatus({ compiling: null })
+    }
+  }
+  const job = startEval({ session: String(session || 'user'), code: `(shadow.cljs.devtools.api/repl :${chosen})`, origin })
+  void job.done.then(() => refreshShadow())
+  return waitFor(job, Number(timeoutMs))
+}
+
+/** Drops the connection; the image keeps running. */
+function disconnect({ byUser = true } = {}) {
+  const backend = conn
+  conn = null // the backend's close handler sees it is no longer current
+  pollGeneration++
+  backend?.close()
+  dropDebugs()
+  setStatus({
+    connected: false,
+    host: null,
+    port: null,
+    impl: null,
+    protocol: null,
+    language: null,
+    launching: false,
+    error: null,
+    disconnectedByUser: byUser,
+    shadow: null,
+    cljsSessions: {},
+    compiling: null,
+  })
+  return status
+}
+
+/** Long-polls the image for (pairens claude) calls while connected. */
+async function pollOutbox(backend, generation) {
+  while (conn === backend && generation === pollGeneration && backend.connected) {
+    try {
+      const requests = await backend.takeOutbox()
+      for (const request of requests) emit({ type: 'claude-request', request })
+      if (!requests.length) await sleep(250) // non-SBCL images return at once
     } catch (err) {
-      if (!client.connected) return
+      if (!backend.connected) return
       log(`outbox poll failed: ${err.message}`)
       await sleep(2000)
     }
@@ -190,100 +343,150 @@ async function pollOutbox(client, generation) {
 }
 
 async function autoConnect() {
-  // The mod passes what it was connected to before a reload (--prefer), or
-  // --no-auto when the person had disconnected on purpose.
+  // The mod passes what it was connected to before a reload (--prefer
+  // [protocol:]host:port), or --no-auto when the person had disconnected on
+  // purpose.
   if (args['no-auto'] !== undefined) {
     setStatus({ connected: false, error: null, disconnectedByUser: true })
     return
   }
-  const prefer = /^(.*):(\d+)$/.exec(args.prefer ?? '')
+  const prefer = /^(?:(swank|nrepl):)?(.*):(\d+)$/.exec(args.prefer ?? '')
   if (prefer) {
     try {
-      await connect(prefer[1] || '127.0.0.1', Number(prefer[2]))
-      log(`reconnected to Swank on ${args.prefer}`)
+      await connect(prefer[2] || '127.0.0.1', Number(prefer[3]), prefer[1])
+      log(`reconnected to ${status.protocol} on ${prefer[2]}:${prefer[3]}`)
       return
     } catch {}
   }
+  // The project's own port files first, then Swank's usual port.
   const candidates = []
-  try {
-    const port = Number(fs.readFileSync(PORT_FILE, 'utf8').trim())
-    if (port) candidates.push(port)
-  } catch {}
-  if (!candidates.includes(4005)) candidates.push(4005)
-  for (const port of candidates) {
+  const add = (port, protocol) => port && !candidates.some(c => c.port === port) && candidates.push({ port, protocol })
+  for (const file of NREPL_PORT_FILES) add(readPort(file), 'nrepl')
+  add(readPort(PORT_FILE), 'swank')
+  add(4005, 'swank')
+  for (const { port, protocol } of candidates) {
     try {
-      await connect('127.0.0.1', port)
-      log(`connected to Swank on port ${port}`)
+      await connect('127.0.0.1', port, protocol)
+      log(`connected to ${protocol} on port ${port}`)
       return
     } catch {}
   }
   setStatus({ connected: false, error: null })
 }
 
-/** Starts SBCL with Swank on a free port, detached so it outlives the mod. */
-async function launch() {
-  if (status.connected) return status
-  fs.mkdirSync(LOG_DIR, { recursive: true })
-  try {
-    fs.unlinkSync(PORT_FILE)
-  } catch {}
-  const logFile = path.join(LOG_DIR, `sbcl-${Date.now()}.log`)
-  const boot = `(progn
-    (unless (find-package "QUICKLISP")
-      (let ((setup (or (probe-file (merge-pathnames ".quicklisp/setup.lisp" (user-homedir-pathname)))
-                       (probe-file (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))))
-        (when setup (load setup))))
-    (if (find-package "QUICKLISP")
-        (funcall (intern "QUICKLOAD" "QL") :swank :silent t)
-        (require :swank))
-    (load ${str(LISP_FILE)})
-    (let ((port (funcall (intern "CREATE-SERVER" "SWANK") :port 0 :dont-close t)))
-      (with-open-file (o ${str(PORT_FILE)} :direction :output :if-exists :supersede)
-        (format o "~D" port)))
-    (loop (sleep 3600)))`
-  // Started through a shell that backgrounds SBCL and exits at once, so SBCL
-  // is re-parented away from this helper: when the mod reloads, the engine
-  // stops the helper and its children, and SBCL (with your image) lives on.
-  const pid = await new Promise((resolve, reject) => {
-    const sh = spawn(
-      '/bin/sh',
-      ['-c', 'nohup sbcl --noinform --eval "$PAIRENS_BOOT" </dev/null >>"$PAIRENS_LOG" 2>&1 & echo $!'],
-      { cwd: CWD, detached: true, env: { ...process.env, PAIRENS_BOOT: boot, PAIRENS_LOG: logFile }, stdio: ['ignore', 'pipe', 'ignore'] },
-    )
+/** What the project in CWD looks like: which language Launch should start. */
+function project() {
+  const has = f => fs.existsSync(path.join(CWD, f))
+  const shadow = has('shadow-cljs.edn')
+  const clojure = shadow || has('deps.edn') || has('project.clj')
+  return { language: clojure ? 'clojure' : 'common-lisp', deps: has('deps.edn'), lein: has('project.clj'), shadow }
+}
+
+/**
+ * Starts a process detached through a shell that backgrounds it and exits at
+ * once, so it is re-parented away from this helper: when the mod reloads, the
+ * engine stops the helper and its children, and the image lives on.
+ */
+function startDetached(command, env, logFile) {
+  return new Promise((resolve, reject) => {
+    const sh = spawn('/bin/sh', ['-c', `nohup ${command} </dev/null >>"$PAIRENS_LOG" 2>&1 & echo $!`], {
+      cwd: CWD,
+      detached: true,
+      env: { ...process.env, ...env, PAIRENS_LOG: logFile },
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
     let text = ''
     sh.stdout.on('data', d => (text += d))
     sh.on('error', reject)
     sh.on('close', () => resolve(Number(text.trim())))
   })
-  const isAlive = () => {
-    try {
-      process.kill(pid, 0)
-      return true
-    } catch {
-      return false
-    }
+}
+
+const isAlive = pid => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
   }
-  setStatus({ launching: true, error: null })
-  log(`launched SBCL (pid ${pid}); its log is ${logFile}`)
-  const deadline = Date.now() + 120_000
-  while (Date.now() < deadline) {
-    await sleep(300)
-    let port
+}
+
+/**
+ * Starts an image for this project: SBCL with Swank, or a Clojure nREPL server
+ * (Leiningen for project.clj, else the Clojure CLI). LANGUAGE ('common-lisp'
+ * or 'clojure') overrides what the project suggests.
+ */
+async function launch(language) {
+  if (status.connected) return status
+  const lang = language === 'clojure' || language === 'common-lisp' ? language : project().language
+  fs.mkdirSync(LOG_DIR, { recursive: true })
+  let pid
+  let logFile
+  let portFile
+  let protocol
+  let name
+  let oldPort = null
+  if (lang === 'clojure') {
+    const p = project()
+    name = p.shadow ? 'shadow-cljs' : p.lein && !p.deps ? 'Leiningen' : 'Clojure'
+    protocol = 'nrepl'
+    // shadow-cljs writes .shadow-cljs/nrepl.port; the others ./.nrepl-port.
+    portFile = p.shadow ? NREPL_PORT_FILES[1] : NREPL_PORT_FILES[0]
+    oldPort = readPort(portFile)
+    logFile = path.join(LOG_DIR, `${p.shadow ? 'shadow-cljs' : 'clojure'}-${Date.now()}.log`)
+    // The project's own shadow-cljs (from npm install), else one on PATH.
+    const localShadow = path.join(CWD, 'node_modules', '.bin', 'shadow-cljs')
+    const command =
+      name === 'shadow-cljs'
+        ? `${fs.existsSync(localShadow) ? '"$PAIRENS_SHADOW"' : 'shadow-cljs'} server`
+        : name === 'Leiningen'
+          ? 'lein repl :headless'
+          : `clojure -Sdeps '{:deps {nrepl/nrepl {:mvn/version "${NREPL_VERSION}"}}}' -M -m nrepl.cmdline`
+    setStatus({ launching: true, launchingWhat: name, error: null })
+    pid = await startDetached(command, { PAIRENS_SHADOW: localShadow }, logFile)
+    log(`launched ${name} (pid ${pid}): ${command}; its log is ${logFile}`)
+  } else {
+    name = 'SBCL'
+    protocol = 'swank'
+    portFile = PORT_FILE
     try {
-      port = Number(fs.readFileSync(PORT_FILE, 'utf8').trim())
+      fs.unlinkSync(PORT_FILE)
     } catch {}
-    if (port) {
+    logFile = path.join(LOG_DIR, `sbcl-${Date.now()}.log`)
+    const boot = `(progn
+      (unless (find-package "QUICKLISP")
+        (let ((setup (or (probe-file (merge-pathnames ".quicklisp/setup.lisp" (user-homedir-pathname)))
+                         (probe-file (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))))
+          (when setup (load setup))))
+      (if (find-package "QUICKLISP")
+          (funcall (intern "QUICKLOAD" "QL") :swank :silent t)
+          (require :swank))
+      (load ${str(LISP_FILE)})
+      (let ((port (funcall (intern "CREATE-SERVER" "SWANK") :port 0 :dont-close t)))
+        (with-open-file (o ${str(PORT_FILE)} :direction :output :if-exists :supersede)
+          (format o "~D" port)))
+      (loop (sleep 3600)))`
+    setStatus({ launching: true, launchingWhat: name, error: null })
+    pid = await startDetached('sbcl --noinform --eval "$PAIRENS_BOOT"', { PAIRENS_BOOT: boot }, logFile)
+    log(`launched SBCL (pid ${pid}); its log is ${logFile}`)
+  }
+  // A JVM that has to download its dependencies first can take a while.
+  const deadline = Date.now() + (lang === 'clojure' ? 300_000 : 120_000)
+  while (Date.now() < deadline) {
+    await sleep(500)
+    const port = readPort(portFile)
+    if (port && port !== oldPort) {
       try {
-        await connect('127.0.0.1', port)
+        await connect('127.0.0.1', port, protocol)
         setStatus({ launching: false, pid })
         return status
       } catch (err) {
-        log(`Swank not ready yet: ${err.message}`)
+        log(`${name} not ready yet: ${err.message}`)
       }
     }
-    if (!pid || !isAlive()) break
+    if (!pid || !isAlive(pid)) break
   }
-  setStatus({ launching: false, error: `SBCL did not start Swank; see ${logFile}` })
+  setStatus({ launching: false, error: `${name} did not start a REPL server; see ${logFile}` })
   return status
 }
 
@@ -303,16 +506,8 @@ function startEval({ session = 'user', code, origin = 'user' }) {
   upsertEntry({ ...entry })
   job.done = (async () => {
     try {
-      if (!swank) throw new Error('not connected to a Lisp image')
-      const r = await swank.rex(`(pairens::rex-eval ${str(session)} ${str(code)})`, { pkg: 'PAIRENS' })
-      const [tag] = r
-      if (String(tag) === ':OK') {
-        const [, output, values, pkg] = r
-        Object.assign(entry, { status: 'ok', output, values, package: pkg })
-      } else {
-        const [, message, output, pkg] = r
-        Object.assign(entry, { status: 'error', error: message, output, package: pkg })
-      }
+      if (!conn) throw new Error('not connected to a Lisp or Clojure image')
+      Object.assign(entry, await conn.evaluate(session, code))
     } catch (err) {
       Object.assign(entry, { status: 'error', error: err.message })
     }
@@ -334,7 +529,9 @@ let askSeq = 0
 /** A question typed in a client with the `pairens:` prefix: hand it to the mod. */
 function ask({ session = 'user', text }) {
   if (typeof text !== 'string' || !text.trim()) throw new Error('nothing to ask')
-  const pkg = [...entries].reverse().find(x => x.session === session && x.package)?.package ?? 'COMMON-LISP-USER'
+  const pkg =
+    [...entries].reverse().find(x => x.session === session && x.package)?.package ??
+    (status.protocol === 'nrepl' ? 'user' : 'COMMON-LISP-USER')
   const request = { id: `ask${Date.now().toString(36)}${++askSeq}`, prompt: text.trim(), value: '', package: pkg, session, via: 'prefix' }
   emit({ type: 'claude-request', request })
   return { sent: true, id: request.id }
@@ -345,7 +542,8 @@ function restart({ id, index }) {
   if (!d) throw new Error(`no debugger ${id} (it may have been resolved already)`)
   const n = Number(index)
   if (!Number.isInteger(n) || n < 0 || n >= d.restarts.length) throw new Error(`no restart ${index} in ${id}`)
-  swank.invokeRestart(d.thread, d.level, n)
+  if (!conn) throw new Error('not connected')
+  conn.restart(d.thread, d.level, n)
   return { ok: true, restart: d.restarts[n].name }
 }
 
@@ -375,25 +573,26 @@ const api = {
     clearSession(String(session || 'user'))
     return { ok: true }
   },
-  'POST /api/v1/connect': async ({ host, port }) => connect(host || '127.0.0.1', Number(port) || 4005),
-  'POST /api/v1/launch': async () => launch(),
+  'POST /api/v1/connect': async ({ host, port, protocol }) => connect(host || '127.0.0.1', Number(port) || 4005, protocol),
+  'POST /api/v1/launch': async ({ language } = {}) => launch(language),
+  'GET /api/v1/project': async () => project(),
   'POST /api/v1/disconnect': async () => disconnect(),
   'POST /api/v1/ask': async body => ask(body),
+  'POST /api/v1/cljs': async body => startCljs(body),
   'POST /api/v1/restart': async body => restart(body),
   'POST /api/v1/sessions': async () => sessions(),
 }
 
 async function sessions() {
-  if (!swank) return { sessions: [] }
-  const r = await swank.rex('(pairens::session-info)', { pkg: 'PAIRENS' })
-  return { sessions: (r ?? []).map(([name, pkg]) => ({ name, package: pkg })) }
+  if (!conn) return { sessions: [] }
+  return { sessions: await conn.sessions() }
 }
 
 /** The mod's own routes (Unix socket only). */
 const internal = {
   'GET /status': async () => status,
-  'POST /connect': async ({ host, port }) => connect(host || '127.0.0.1', Number(port) || 4005),
-  'POST /launch': async () => launch(),
+  'POST /connect': async ({ host, port, protocol }) => connect(host || '127.0.0.1', Number(port) || 4005, protocol),
+  'POST /launch': async ({ language } = {}) => launch(language),
   'POST /disconnect': async () => disconnect(),
   'POST /eval': async ({ session, code, origin, timeoutMs = 0 }) => {
     if (typeof code !== 'string' || !code.trim()) throw new Error('no code to evaluate')
@@ -405,16 +604,15 @@ const internal = {
     return waitFor(job, Number(timeoutMs))
   },
   'POST /classify': async ({ session = 'user', code }) => {
-    if (!swank) return { readOnly: false, reason: 'not connected' }
-    const r = await swank.rex(`(pairens::read-only-code-p ${str(session)} ${str(code)})`, { pkg: 'PAIRENS' })
-    return { readOnly: !(Array.isArray(r) && r.length === 0) }
+    if (!conn) return { readOnly: false, reason: 'not connected' }
+    return { readOnly: (await conn.classify(session, code)) === true }
   },
   'POST /deliver': async ({ id, answer }) => {
-    if (!swank) return { delivered: false }
-    const r = await swank.rex(`(pairens::deliver ${str(id)} ${str(answer)})`, { pkg: 'PAIRENS' })
-    return { delivered: !(Array.isArray(r) && r.length === 0) }
+    if (!conn) return { delivered: false }
+    return { delivered: (await conn.deliver(id, answer)) === true }
   },
   'POST /sessions': async () => sessions(),
+  'POST /cljs': async body => startCljs(body),
   'POST /restart': async body => restart(body),
   // The mod's view of shared state, pushed to browser clients.
   'POST /sync': async ({ entries: all, mode: m }) => {
@@ -623,6 +821,7 @@ unixServer.listen(SOCKET, async () => {
     log(`browser listener not started: ${err.message}`)
   }
   emit({ type: 'ready', socket: SOCKET, url })
+  setStatus({ project: project() })
   autoConnect()
 })
 

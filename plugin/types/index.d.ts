@@ -23,7 +23,21 @@ export type PairensStatus = {
   host?: string | null
   port?: number | null
   impl?: string | null
+  /** How pAIrens talks to the image: Swank (Common Lisp) or nREPL (Clojure). */
+  protocol?: 'swank' | 'nrepl' | null
+  /** 'Common Lisp' or 'Clojure' while connected. */
+  language?: string | null
   launching?: boolean
+  /** What Launch is starting: 'SBCL', 'Clojure' or 'Leiningen'. */
+  launchingWhat?: string | null
+  /** What the project folder looks like: which language Launch starts by default. */
+  project?: { language: 'common-lisp' | 'clojure'; deps: boolean; lein: boolean; shadow?: boolean } | null
+  /** When connected to a shadow-cljs server: its builds, the watched ones, and JS runtimes per watched build. */
+  shadow?: { builds: string[]; watching: string[]; runtimes: Record<string, number> } | null
+  /** Sessions evaluating ClojureScript: session name → shadow-cljs build. */
+  cljsSessions?: Record<string, string>
+  /** A shadow-cljs build being compiled before a session switches to it. */
+  compiling?: string | null
   error?: string | null
   /** The person disconnected on purpose; a reload doesn't reconnect. */
   disconnectedByUser?: boolean

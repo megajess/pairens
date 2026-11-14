@@ -1,17 +1,22 @@
 // The pAIrens browser page's editor bundle: CodeMirror 6 with the Common Lisp
-// mode, REPL keys, Lisp highlighting for history rows, and safe Markdown for
-// Claude's replies. Built by `npm run build` into ../browser/vendor/editor.js.
+// and Clojure modes, REPL keys, highlighting for history rows, and safe
+// Markdown for Claude's replies. Built by `npm run build` into ../browser/vendor/editor.js.
 
-import { EditorState } from '@codemirror/state'
+import { EditorState, Compartment } from '@codemirror/state'
 import { EditorView, keymap, placeholder, drawSelection, highlightActiveLine } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, insertNewlineAndIndent, indentWithTab } from '@codemirror/commands'
 import { StreamLanguage, bracketMatching, indentOnInput, syntaxHighlighting, HighlightStyle } from '@codemirror/language'
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete'
 import { commonLisp } from '@codemirror/legacy-modes/mode/commonlisp'
+import { clojure } from '@codemirror/legacy-modes/mode/clojure'
 import { tags as t, highlightTree, classHighlighter } from '@lezer/highlight'
 import { Marked } from 'marked'
 
-const lisp = StreamLanguage.define(commonLisp)
+const languages = {
+  'common-lisp': StreamLanguage.define(commonLisp),
+  clojure: StreamLanguage.define(clojure),
+}
+const languageFor = name => languages[name] ?? languages['common-lisp']
 
 // Colours come from the page's CSS variables, so light and dark both work.
 const lispHighlight = HighlightStyle.define([
@@ -32,8 +37,34 @@ export function messageText(text) {
   return MESSAGE_PREFIX.test(text) ? text.replace(MESSAGE_PREFIX, '').trim() : null
 }
 
-/** True when TEXT has balanced parens outside strings, comments and #\chars. */
-export function isComplete(text) {
+/** True when TEXT is complete: balanced brackets outside strings, comments and characters. */
+export function isComplete(text, language = 'common-lisp') {
+  return language === 'clojure' ? isCompleteClojure(text) : isCompleteLisp(text)
+}
+
+/** Clojure: (), [] and {} outside strings, #"regexes", ; comments and \chars. */
+function isCompleteClojure(text) {
+  let depth = 0
+  let i = 0
+  while (i < text.length) {
+    const c = text[i]
+    if (c === ';') {
+      while (i < text.length && text[i] !== '\n') i++
+    } else if (c === '\\') {
+      i++ // the character itself, whatever it is
+    } else if (c === '"') {
+      i++
+      while (i < text.length && text[i] !== '"') i += text[i] === '\\' ? 2 : 1
+      if (i >= text.length) return false
+    } else if (c === '(' || c === '[' || c === '{') depth++
+    else if (c === ')' || c === ']' || c === '}') depth--
+    i++
+  }
+  return depth <= 0
+}
+
+/** Common Lisp: balanced parens outside strings, comments, |symbols| and #\chars. */
+function isCompleteLisp(text) {
   let depth = 0
   let i = 0
   while (i < text.length) {
@@ -66,8 +97,11 @@ export function isComplete(text) {
  *   onSubmit(text)   called on Enter when the input is a complete form
  *   history()        returns past inputs, oldest first, for Up/Down
  *   placeholderText  dim text in the empty editor
+ *   language         'common-lisp' (default) or 'clojure'; setLanguage changes it
  */
-export function createEditor({ parent, onSubmit, history: pastInputs = () => [], placeholderText = '' }) {
+export function createEditor({ parent, onSubmit, history: pastInputs = () => [], placeholderText = '', language = 'common-lisp' }) {
+  let current = language
+  const languageSlot = new Compartment()
   let walk = -1 // -1: editing the draft; otherwise an index into pastInputs()
   let draft = ''
 
@@ -90,7 +124,7 @@ export function createEditor({ parent, onSubmit, history: pastInputs = () => [],
       run: view => {
         const text = view.state.doc.toString()
         // A message for Claude is sent whatever its parens; Lisp only when complete.
-        return MESSAGE_PREFIX.test(text) || isComplete(text) ? submit(view) : insertNewlineAndIndent(view)
+        return MESSAGE_PREFIX.test(text) || isComplete(text, current) ? submit(view) : insertNewlineAndIndent(view)
       },
     },
     { key: 'Shift-Enter', run: insertNewlineAndIndent },
@@ -138,7 +172,7 @@ export function createEditor({ parent, onSubmit, history: pastInputs = () => [],
         history(),
         drawSelection(),
         highlightActiveLine(),
-        lisp,
+        languageSlot.of(languageFor(current)),
         syntaxHighlighting(lispHighlight),
         bracketMatching(),
         closeBrackets(),
@@ -158,13 +192,18 @@ export function createEditor({ parent, onSubmit, history: pastInputs = () => [],
       setText(view, text)
       view.focus()
     },
+    setLanguage: name => {
+      if (name === current || !languages[name]) return
+      current = name
+      view.dispatch({ effects: languageSlot.reconfigure(languageFor(name)) })
+    },
   }
 }
 
-/** Fills ELEMENT with TEXT highlighted as Lisp (tok-* classes). */
-export function highlightLisp(text, element) {
+/** Fills ELEMENT with TEXT highlighted as LANGUAGE (tok-* classes). */
+export function highlightLisp(text, element, language = 'common-lisp') {
   element.textContent = ''
-  const tree = lisp.parser.parse(text)
+  const tree = languageFor(language).parser.parse(text)
   let at = 0
   const add = (to, cls) => {
     if (to <= at) return

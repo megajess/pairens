@@ -6,7 +6,7 @@
     {
       "name": "pairens",
       "source": "./plugin",
-      "description": "A Lisp REPL you and Claude share: Common Lisp over Swank, with Clojure/ClojureScript over nREPL coming."
+      "description": "A Lisp REPL you and Claude share: Common Lisp over Swank, Clojure and ClojureScript over nREPL."
     }
   ]
 }

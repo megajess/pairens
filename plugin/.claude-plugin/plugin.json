@@ -1,11 +1,11 @@
 {
   "name": "pairens",
-  "version": "0.3.1",
-  "description": "pAIrens: a Lisp REPL you and Claude share (Common Lisp over Swank; Clojure/ClojureScript over nREPL coming).",
+  "version": "0.4.0",
+  "description": "pAIrens: a Lisp REPL you and Claude share (Common Lisp over Swank; Clojure and ClojureScript over nREPL).",
   "author": { "name": "Jesse Suter (megajess)", "url": "https://github.com/megajess" },
   "homepage": "https://pairens.dev/",
   "repository": "https://github.com/megajess/pairens",
   "license": "MIT",
-  "keywords": ["lisp", "common-lisp", "repl", "swank", "slime", "clojure"],
+  "keywords": ["lisp", "common-lisp", "repl", "swank", "slime", "clojure", "nrepl", "cider", "clojurescript", "shadow-cljs"],
   "types": "./types/index.d.ts"
 }

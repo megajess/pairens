@@ -2,10 +2,10 @@
 
 `editor.js` is the code editor on the pAIrens browser page (`/pairens-browser`).
 It's a minified bundle of [CodeMirror 6](https://codemirror.net/) with its Common
-Lisp mode, plus [marked](https://marked.js.org/) for rendering Claude's replies.
+Lisp and Clojure modes, plus [marked](https://marked.js.org/) for rendering Claude's replies.
 
 `editor.src.js`, next to it, is the pAIrens code the bundle is built from: the
-REPL keys, Lisp highlighting for history rows, and the Markdown renderer, which
+REPL keys, Lisp and Clojure highlighting for history rows, and the Markdown renderer, which
 escapes raw HTML and only links `http`, `https` and `mailto` addresses. Everything
 else in the bundle is the unmodified packages below.
 

@@ -53,6 +53,10 @@ button[hidden] { display: none; }
 .connect { display: flex; gap: 10px; align-items: center; padding: 8px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .connect form { display: flex; gap: 6px; }
 .connect[hidden] { display: none; }
+.cljs { display: flex; gap: 8px; align-items: center; padding: 6px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; font-size: 13px; }
+.cljs[hidden] { display: none; }
+.cljs .label { color: var(--muted); }
+.cljs .warn { color: var(--err); }
 
 /* --- tabs --- */
 .tabs { display: flex; gap: 4px; padding: 6px 16px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
@@ -134,5 +138,5 @@ button[hidden] { display: none; }
 @media (max-width: 600px) {
   .prompt .hint { display: none; }
   .bar { padding: 8px 12px; }
-  .history, .input, .tabs, .debugs, .connect { padding-left: 12px; padding-right: 12px; }
+  .history, .input, .tabs, .debugs, .connect, .cljs { padding-left: 12px; padding-right: 12px; }
 }

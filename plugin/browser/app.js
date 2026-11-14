@@ -95,7 +95,9 @@ function setOnline(online) {
 
 // --- rendering -----------------------------------------------------------------
 
-const shortPackage = p => (!p || p === 'COMMON-LISP-USER' ? 'CL-USER' : p)
+/** The connected language, for highlighting and for when Enter submits. */
+const language = () => (state.status.protocol === 'nrepl' ? 'clojure' : 'common-lisp')
+const shortPackage = p => (!p ? (language() === 'clojure' ? 'user' : 'CL-USER') : p === 'COMMON-LISP-USER' ? 'CL-USER' : p)
 const shownEntries = () => state.entries.filter(x => x.session === state.tab)
 const currentPackage = () => shortPackage([...shownEntries()].reverse().find(x => x.package)?.package)
 
@@ -111,13 +113,60 @@ function renderStatus() {
   const s = state.status
   const el = $('#status')
   el.className = 'status' + (s.connected ? ' ok' : '')
+  const tabBuild = s.cljsSessions?.[state.tab]
   el.textContent = s.connected
-    ? `● ${s.impl} · Swank ${s.host}:${s.port}`
+    ? `● ${tabBuild ? `ClojureScript :${tabBuild} via ` : ''}${s.impl} · ${s.protocol === 'nrepl' ? 'nREPL' : 'Swank'} ${s.host}:${s.port}` +
+      (s.compiling ? ` · compiling :${s.compiling}…` : '')
     : s.launching
-      ? '◌ starting SBCL with Swank…'
+      ? s.launchingWhat && s.launchingWhat !== 'SBCL'
+        ? `◌ starting ${s.launchingWhat} with nREPL…`
+        : '◌ starting SBCL with Swank…'
       : `○ not connected${s.error ? ` (${s.error})` : ''}`
   $('#connect').hidden = s.connected || s.launching
   $('#disconnect').hidden = !s.connected
+  // The project's language gets the primary Launch button, first.
+  const clojureFirst = s.project?.language === 'clojure'
+  $('#launch-clojure').className = clojureFirst ? 'primary' : ''
+  $('#launch-common-lisp').className = clojureFirst ? '' : 'primary'
+  $('#launch-clojure').style.order = clojureFirst ? '-1' : ''
+  if (s.connected) {
+    editor.setLanguage(language())
+    $('#prompt').textContent = `${currentPackage()}>`
+  }
+  renderCljs()
+}
+
+/** ClojureScript controls for the current tab, when connected to shadow-cljs. */
+function renderCljs() {
+  const s = state.status
+  const box = $('#cljs')
+  const builds = s.connected ? s.shadow?.builds ?? [] : []
+  box.hidden = !builds.length
+  box.textContent = ''
+  if (!builds.length) return
+  const label = document.createElement('span')
+  label.className = 'label'
+  label.textContent = 'ClojureScript:'
+  box.appendChild(label)
+  const tabBuild = s.cljsSessions?.[state.tab]
+  const button = (text, onclick, title) => {
+    const b = document.createElement('button')
+    b.textContent = text
+    b.title = title
+    b.onclick = onclick
+    box.appendChild(b)
+  }
+  if (tabBuild) {
+    button('back to Clojure', () => api('eval', { session: state.tab, code: ':cljs/quit' }).catch(report), 'Evaluates :cljs/quit')
+    if (!s.shadow.runtimes?.[tabBuild]) {
+      const warn = document.createElement('span')
+      warn.className = 'warn'
+      warn.textContent = 'no JS runtime connected; start the app'
+      box.appendChild(warn)
+    }
+  } else
+    for (const build of builds.slice(0, 6))
+      button(`:${build}`, () => api('cljs', { session: state.tab, build }).catch(report), `Evaluate ClojureScript in build :${build} in this tab`)
 }
 
 function renderModes() {
@@ -140,6 +189,7 @@ function renderTabs() {
       } catch {}
       renderTabs()
       renderHistory(true)
+      renderStatus()
       editor.focus()
     }
     nav.appendChild(b)
@@ -213,7 +263,7 @@ function entryRow(x) {
     pkg.className = 'pkg'
     pkg.textContent = `${shortPackage(x.package)}>`
     const pre = document.createElement('pre')
-    highlightLisp(x.text, pre)
+    highlightLisp(x.text, pre, language())
     code.append(pkg, pre)
     el.appendChild(code)
     if (x.output) el.appendChild(pre_('output', x.output.replace(/\s+$/, '')))
@@ -331,15 +381,18 @@ const editor = createEditor({
 for (const b of document.querySelectorAll('.modes button'))
   b.onclick = () => api('mode', { mode: b.dataset.mode }).catch(report)
 
-$('#launch').onclick = () => api('launch', {}).catch(report)
+$('#launch-common-lisp').onclick = () => api('launch', { language: 'common-lisp' }).catch(report)
+$('#launch-clojure').onclick = () => api('launch', { language: 'clojure' }).catch(report)
 $('#disconnect').onclick = () => api('disconnect', {}).catch(report)
 $('#connect-form').onsubmit = e => {
   e.preventDefault()
-  const arg = $('#connect-addr').value.trim() || '4005'
+  // "[swank|nrepl] [host:]port"; without a protocol the helper guesses.
+  const m = /^\s*(?:(swank|nrepl)\b[:\s]*)?(.*)$/i.exec($('#connect-addr').value) ?? []
+  const arg = (m[2] ?? '').trim() || '4005'
   const at = arg.lastIndexOf(':')
   const host = at < 0 ? '127.0.0.1' : arg.slice(0, at) || '127.0.0.1'
   const port = Number(at < 0 ? arg : arg.slice(at + 1))
-  api('connect', { host, port }).catch(report)
+  api('connect', { host, port, ...(m[1] ? { protocol: m[1].toLowerCase() } : {}) }).catch(report)
 }
 
 connectEvents()

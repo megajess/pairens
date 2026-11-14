@@ -1,12 +1,12 @@
 // pAIrens: a Lisp REPL you and Claude share.
 //
-// Common Lisp over Swank. The mod starts a Node helper
-// (helper/pairens-helper.mjs) that holds the Swank connection and the shared
+// Common Lisp over Swank, Clojure over nREPL. The mod starts a Node helper
+// (helper/pairens-helper.mjs) that holds the connection and the shared
 // history; the mod sends it requests over HTTP on a Unix socket and reads its
 // events from stdout. The helper also serves the browser page (browser/) and
 // the v1 API on 127.0.0.1; the page is another view of the same history.
-// A reload restarts the helper; an SBCL it launched is not its child, so the
-// image survives and the new helper reconnects through ./.swank-port.
+// A reload restarts the helper; an SBCL or JVM it launched is not its child,
+// so the image survives and the new helper reconnects to it.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
@@ -83,7 +83,7 @@ async function startHelper($: Engine, cwd: string) {
   const before = await read($, statusAtom)
   const reconnect =
     before.connected && before.port
-      ? ['--prefer', `${before.host ?? '127.0.0.1'}:${before.port}`]
+      ? ['--prefer', `${before.protocol ? `${before.protocol}:` : ''}${before.host ?? '127.0.0.1'}:${before.port}`]
       : before.disconnectedByUser
         ? ['--no-auto', '1']
         : []
@@ -135,14 +135,28 @@ async function helper<T>($: Engine, path: string, body?: Record<string, unknown>
   return data as T
 }
 
-/** "host:port" or "port" → host and port (default 127.0.0.1:4005). */
-function parseAddress(text: string): { host: string; port: number } {
-  const arg = text.trim() || '4005'
+type Protocol = 'swank' | 'nrepl'
+
+/**
+ * "[swank|nrepl] [host:]port" → host, port and maybe a protocol (default
+ * 127.0.0.1:4005; without a protocol the helper tries the likelier one first).
+ */
+function parseAddress(text: string): { host: string; port: number; protocol?: Protocol } {
+  const m = /^\s*(?:(swank|nrepl)\b[:\s]*)?(.*)$/i.exec(text) ?? []
+  const protocol = m[1] ? (m[1].toLowerCase() as Protocol) : undefined
+  const arg = (m[2] ?? '').trim() || '4005'
   const at = arg.lastIndexOf(':')
-  return at < 0
-    ? { host: '127.0.0.1', port: Number(arg) }
-    : { host: arg.slice(0, at) || '127.0.0.1', port: Number(arg.slice(at + 1)) }
+  const address =
+    at < 0
+      ? { host: '127.0.0.1', port: Number(arg) }
+      : { host: arg.slice(0, at) || '127.0.0.1', port: Number(arg.slice(at + 1)) }
+  return protocol ? { ...address, protocol } : address
 }
+
+const protocolName = (p?: string | null) => (p === 'nrepl' ? 'nREPL' : 'Swank')
+
+/** How to call claude from code in the connected language. */
+const claudeCall = (s: PairensStatus) => (s.protocol === 'nrepl' ? '(pairens/claude ...)' : '(pairens:claude ...)')
 
 /** Adds an entry the mod made (a question or Claude's reply) and shares it. */
 async function pushEntry($: Engine, entry: PairensEntry) {
@@ -231,12 +245,18 @@ async function askClaude($: Engine, req: ClaudeRequest) {
     .slice(-5)
     .map(formatEntry)
     .join('\n')
+  const status = await read($, statusAtom)
+  const clojure = req.id.startsWith('clj-') || status.protocol === 'nrepl'
+  const cljsBuild = status.cljsSessions?.[req.session]
+  const lang = cljsBuild ? `ClojureScript (shadow-cljs build :${cljsBuild})` : clojure ? 'Clojure' : 'Lisp'
+  const space = clojure ? 'namespace' : 'package'
   const where =
     req.session === 'editor'
-      ? `the person's own editor REPL (connected to the same Lisp image), package ${req.package}`
-      : `the pAIrens REPL, session "${req.session}", package ${req.package}`
+      ? `the person's own editor REPL (connected to the same ${lang} image), ${space} ${req.package}`
+      : `the pAIrens ${lang} REPL, session "${req.session}", ${space} ${req.package}`
+  const how = req.via === 'prefix' ? 'by typing "pairens: …"' : `with ${clojure ? '(pairens/claude ...)' : '(pairens:claude ...)'}`
   const text = [
-    `[pAIrens ${req.id}] Asked from ${where} ${req.via === 'prefix' ? 'by typing "pairens: …"' : 'with (pairens:claude ...)'}:`,
+    `[pAIrens ${req.id}] Asked from ${where} ${how}:`,
     '',
     req.prompt,
     ...(req.value ? ['', `Value passed along: ${req.value}`] : []),
@@ -332,7 +352,7 @@ function formatEvalResult(x: PairensEntry): string {
 const MODE_HELP: Record<PairensMode, string> = {
   ask: 'Ask: you approve each eval Claude wants to run',
   auto: 'Auto: Claude evals freely; every eval shows here',
-  'read-only': 'Read-only: Claude may only inspect (describe, documentation, apropos, …)',
+  'read-only': 'Read-only: Claude may only inspect (describe, documentation, apropos; in Clojure doc, source, dir, …)',
 }
 
 const isMode = (s: string): s is PairensMode => s === 'ask' || s === 'auto' || s === 'read-only'
@@ -366,18 +386,20 @@ export const register: Register = on => {
       name: 'eval',
       isDeferred: false,
       description:
-        "Evaluate Common Lisp code in the person's live Lisp image through pAIrens (Swank). " +
+        "Evaluate code in the person's live image through pAIrens: Common Lisp (over Swank) or Clojure (over nREPL), " +
+        'whichever is connected; status says which. With a shadow-cljs server, a session can evaluate ClojureScript in a build\'s JS runtime: ' +
+        'evaluate (shadow.cljs.devtools.api/repl :build) in it to switch, and :cljs/quit to switch back (status lists builds and which sessions are ClojureScript). ' +
         'The person sees every eval in their pAIrens REPL pane, marked as yours. ' +
-        'Sessions share the image, but each keeps its own current package and *, **, ***: ' +
+        'Sessions share the image, but each keeps its own current package (Clojure: namespace) and *, **, *** (Clojure: *1, *2, *3): ' +
         '"user" is the person\'s own REPL session; pick your own session name (e.g. "claude" or "claude-tests") ' +
         "for background or long-running work so you don't disturb theirs; it shows as its own tab. " +
         'Returns output, return values or the error. An eval that outlasts timeout_seconds keeps running as a job: ' +
         'fetch it with job_result. The person sets a mode: ask (each eval needs approval), auto, or read-only ' +
-        '(only inspection such as describe, documentation, apropos).',
+        '(only inspection such as describe, documentation, apropos; in Clojure doc, source, dir, meta).',
       inputSchema: {
         type: 'object',
         properties: {
-          code: { type: 'string', description: 'One or more Lisp forms; the last form\'s values are returned.' },
+          code: { type: 'string', description: 'One or more forms in the connected language; each form\'s value is returned.' },
           session: { type: 'string', description: 'pAIrens session to evaluate in. Default "user".' },
           timeout_seconds: { type: 'number', description: 'How long to wait before handing back a job id. Default 30, max 55.' },
         },
@@ -386,7 +408,7 @@ export const register: Register = on => {
     })
     await $.tool.register({
       name: 'history',
-      description: "Read recent pAIrens REPL history: what the person and you evaluated, with output, values and errors, plus questions the person asked you (typed as 'pairens: …' or with (pairens:claude ...)).",
+      description: "Read recent pAIrens REPL history: what the person and you evaluated, with output, values and errors, plus questions the person asked you (typed as 'pairens: …', or with (pairens:claude ...) in Common Lisp or (pairens/claude ...) in Clojure).",
       inputSchema: {
         type: 'object',
         properties: {
@@ -410,7 +432,7 @@ export const register: Register = on => {
     await $.tool.register({
       name: 'status',
       description:
-        "pAIrens connection status (Lisp implementation, Swank port), the person's eval mode, each session's current package, and any Lisp threads waiting in the debugger (with their restarts).",
+        "pAIrens connection status (Common Lisp over Swank or Clojure over nREPL, the implementation and port), the person's eval mode, each session's current package or namespace, and any Lisp threads waiting in the debugger (with their restarts; Common Lisp only).",
     })
     await $.tool.register({
       name: 'debug_restart',
@@ -436,14 +458,23 @@ export const register: Register = on => {
     })
     await $.command.register({
       name: 'pairens-connect',
-      description: 'Connect pAIrens to a running Swank server',
-      argumentHint: '[host:]port',
+      description: 'Connect pAIrens to a running Swank (Common Lisp) or nREPL (Clojure) server',
+      argumentHint: '[swank|nrepl] [host:]port',
     })
-    await $.command.register({ name: 'pairens-launch', description: 'Start SBCL with Swank for pAIrens' })
+    await $.command.register({
+      name: 'pairens-launch',
+      description: "Start a REPL for pAIrens: SBCL with Swank, or Clojure with nREPL (the project's choice by default)",
+      argumentHint: '[sbcl | clojure]',
+    })
+    await $.command.register({
+      name: 'pairens-cljs',
+      description: 'Switch the user session to ClojureScript in a shadow-cljs build, or back to Clojure with "quit"',
+      argumentHint: '[build | quit]',
+    })
     await $.command.register({ name: 'pairens-browser', description: 'Open the pAIrens REPL in your web browser' })
     await $.command.register({
       name: 'pairens-disconnect',
-      description: 'Disconnect pAIrens from the Lisp image (the Lisp keeps running)',
+      description: 'Disconnect pAIrens from the image (the Lisp or Clojure process keeps running)',
     })
 
     await startHelper($, e.cwd)
@@ -471,29 +502,60 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'pairens-connect' }, async ($, e) => {
-    const { host, port } = parseAddress(e.args)
+    const address = parseAddress(e.args)
+    const { host, port } = address
     try {
-      const s = await helper<PairensStatus>($, '/connect', { host, port })
-      return { text: `pAIrens connected to ${s.impl} on ${host}:${port}.` }
+      const s = await helper<PairensStatus>($, '/connect', address)
+      return { text: `pAIrens connected to ${s.impl} over ${protocolName(s.protocol)} on ${host}:${port}.` }
     } catch (err) {
       return { text: `pAIrens could not connect to ${host}:${port}: ${String(err)}` }
     }
   })
 
-  on('command.run', { command: 'pairens-launch' }, async $ => {
-    void helper($, '/launch', {}).catch(err => $.ui.toast(`pAIrens launch failed: ${String(err)}`))
+  on('command.run', { command: 'pairens-launch' }, async ($, e) => {
+    const arg = e.args.trim().toLowerCase()
+    const language = /^(clj|clojure|lein|nrepl)/.test(arg) ? 'clojure' : /^(sbcl|cl|lisp|common|swank)/.test(arg) ? 'common-lisp' : undefined
+    const chosen = language ?? (await read($, statusAtom)).project?.language ?? 'common-lisp'
+    void helper($, '/launch', { language: chosen }).catch(err => $.ui.toast(`pAIrens launch failed: ${String(err)}`))
     await $.ui.open({ id: PANE, title: 'pAIrens' })
-    return { text: 'pAIrens is starting SBCL with Swank; the pane shows when it is connected.' }
+    return {
+      text:
+        chosen === 'clojure'
+          ? 'pAIrens is starting Clojure with nREPL (the first start may download dependencies); the pane shows when it is connected.'
+          : 'pAIrens is starting SBCL with Swank; the pane shows when it is connected.',
+    }
   })
 
   on('command.run', { command: 'pairens-browser' }, async $ => ({ text: await openBrowser($) }))
 
+  on('command.run', { command: 'pairens-cljs' }, async ($, e) => {
+    const arg = e.args.trim()
+    const session = (await read($, tabAtom)) || 'user'
+    try {
+      if (/^(quit|clj|clojure|exit)$/i.test(arg)) {
+        const entry = await helper<PairensEntry>($, '/eval', { session, code: ':cljs/quit', origin: 'user', timeoutMs: 20000 })
+        return { text: entry.status === 'ok' ? `pAIrens session "${session}" is back in Clojure.` : `pAIrens: ${entry.error}` }
+      }
+      const entry = await helper<PairensEntry>($, '/cljs', { session, build: arg || undefined, origin: 'user', timeoutMs: 120000 })
+      return {
+        text:
+          entry.status === 'ok'
+            ? `pAIrens session "${session}" now evaluates ClojureScript (${(entry.values ?? []).join(' ')}). :cljs/quit or /pairens-cljs quit switches back.`
+            : `pAIrens: ${entry.error}`,
+      }
+    } catch (err) {
+      return { text: `pAIrens could not switch to ClojureScript: ${String(err)}` }
+    }
+  })
+
   on('command.run', { command: 'pairens-disconnect' }, async $ => {
     const before = await read($, statusAtom)
-    if (!before.connected) return { text: 'pAIrens is not connected to a Lisp image.' }
+    if (!before.connected) return { text: 'pAIrens is not connected to an image.' }
     try {
       await helper($, '/disconnect', {})
-      return { text: `pAIrens disconnected from ${before.impl} on ${before.host}:${before.port}. The Lisp keeps running; /pairens-connect ${before.port} reconnects.` }
+      return {
+        text: `pAIrens disconnected from ${before.impl} on ${before.host}:${before.port}. It keeps running; /pairens-connect ${[before.protocol, before.port].filter(Boolean).join(' ')} reconnects.`,
+      }
     } catch (err) {
       return { text: `pAIrens could not disconnect: ${String(err)}` }
     }
@@ -612,13 +674,25 @@ export const register: Register = on => {
     const debugs = await read($, debugsAtom)
     let sessions = ''
     try {
-      const r = await helper<{ sessions: { name: string; package: string }[] }>($, '/sessions', {})
-      sessions = r.sessions.map(x => `  ${x.name}: ${shortPackage(x.package)}`).join('\n')
+      const r = await helper<{ sessions: { name: string; package: string; cljs?: string }[] }>($, '/sessions', {})
+      sessions = r.sessions
+        .map(x => `  ${x.name}: ${shortPackage(x.package)}${x.cljs ? ` (ClojureScript, shadow-cljs build :${x.cljs})` : ''}`)
+        .join('\n')
     } catch {}
-    const conn = s.connected ? `Connected to ${s.impl} via Swank on ${s.host}:${s.port}` : `Not connected${s.error ? ` (${s.error})` : ''}`
+    const shadow = s.connected && s.shadow
+      ? `shadow-cljs builds: ${s.shadow.builds
+          .map(b => `:${b}${s.shadow?.watching.includes(b) ? ` (watching, ${s.shadow?.runtimes[b] ?? 0} JS runtime(s) connected)` : ''}`)
+          .join(', ')}. To evaluate ClojureScript in a session, eval (shadow.cljs.devtools.api/repl :build) there` +
+        ' (start watching first with (shadow.cljs.devtools.api/watch :build) if needed; a build needs a connected JS runtime: the app running). :cljs/quit switches back. ' +
+        'From ClojureScript code the person asks you by typing "pairens: …"; (pairens/claude ...) is Clojure only.'
+      : ''
+    const conn = s.connected
+      ? `Connected to ${s.impl} via ${protocolName(s.protocol)} on ${s.host}:${s.port}. From code the person asks you with ${claudeCall(s)}.`
+      : `Not connected${s.error ? ` (${s.error})` : ''}`
     return {
       result: [
         conn,
+        shadow,
         `Mode: ${MODE_HELP[m]}`,
         sessions ? `Sessions:\n${sessions}` : 'No sessions yet.',
         debugs.length ? `Waiting in the debugger:\n${debugs.map(formatDebug).join('\n\n')}` : 'No Lisp thread is in the debugger.',
@@ -661,10 +735,14 @@ export const register: Register = on => {
     }
     const { Box, Text, Button, Input } = $.ui.resolve(e)
 
+    const tabBuild = status.cljsSessions?.[selected]
     const statusLine = status.connected
-      ? `● ${status.impl} · Swank ${status.host}:${status.port}`
+      ? `● ${tabBuild ? `ClojureScript :${tabBuild} via ` : ''}${status.impl} · ${protocolName(status.protocol)} ${status.host}:${status.port}` +
+        (status.compiling ? ` · compiling :${status.compiling}…` : '')
       : status.launching
-        ? '◌ starting SBCL with Swank…'
+        ? status.launchingWhat && status.launchingWhat !== 'SBCL'
+          ? `◌ starting ${status.launchingWhat} with nREPL…`
+          : '◌ starting SBCL with Swank…'
         : status.helper === 'starting'
           ? '◌ starting pAIrens…'
           : `○ not connected${status.error ? ` (${status.error})` : ''}`
@@ -833,17 +911,57 @@ export const register: Register = on => {
             ) : null}
           </Box>
 
+          {status.connected && status.shadow?.builds.length ? (
+            <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+              <Text dimColor>ClojureScript:</Text>
+              {tabBuild ? (
+                <Button
+                  key="cljs-quit"
+                  onPress={() =>
+                    void helper($, '/eval', { session: selected, code: ':cljs/quit', origin: 'user', timeoutMs: 0 }).catch(err =>
+                      $.ui.toast(`pAIrens: ${String(err)}`),
+                    )
+                  }
+                >
+                  back to Clojure
+                </Button>
+              ) : (
+                status.shadow.builds.slice(0, 6).map(build => (
+                  <Button
+                    key={`cljs-${build}`}
+                    onPress={() =>
+                      void helper($, '/cljs', { session: selected, build, origin: 'user', timeoutMs: 0 }).catch(err =>
+                        $.ui.toast(`pAIrens: ${String(err)}`),
+                      )
+                    }
+                  >
+                    :{build}
+                  </Button>
+                ))
+              )}
+              {tabBuild && !status.shadow.runtimes[tabBuild] ? <Text color="warning">no JS runtime connected; start the app</Text> : null}
+            </Box>
+          ) : null}
+
           {!status.connected && !status.launching ? (
             <Box flexDirection="column" gap={1}>
               <Box flexDirection="row" gap={1}>
-                <Button key="launch" variant="primary" onPress={() => void helper($, '/launch', {}).catch(err => $.ui.toast(`pAIrens: ${String(err)}`))}>
-                  Launch SBCL
-                </Button>
+                {(status.project?.language === 'clojure' ? (['clojure', 'common-lisp'] as const) : (['common-lisp', 'clojure'] as const)).map(
+                  (language, i) => (
+                    <Button
+                      key={`launch-${language}`}
+                      variant={i === 0 ? 'primary' : 'secondary'}
+                      onPress={() => void helper($, '/launch', { language }).catch(err => $.ui.toast(`pAIrens: ${String(err)}`))}
+                    >
+                      {language === 'clojure' ? 'Launch Clojure' : 'Launch SBCL'}
+                    </Button>
+                  ),
+                )}
               </Box>
               <Input
                 key="port"
-                label="Or connect to a running Swank"
-                placeholder="4005 or host:port"
+                label="Or connect to a running Swank or nREPL"
+                placeholder="port or host:port"
                 submitLabel="Connect"
                 onSubmit={value => {
                   void helper($, '/connect', parseAddress(value)).catch(err =>
