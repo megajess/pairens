@@ -21,13 +21,13 @@
   :root {
     --bg: #fbfaf7; --fg: #1d1b18; --muted: #6b665e; --line: #e4e0d8;
     --card: #ffffff; --accent: #b4532a; --code-bg: #f3f0ea; --ok: #2f7a3d;
-    --logo-bottom: #2e2b27; --logo-hold: 0%;
+    --logo-bottom: #cfc9be; --logo-hold: 50%;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #161513; --fg: #ece8e1; --muted: #a39d93; --line: #2c2a26;
       --card: #1e1c19; --accent: #e07b4c; --code-bg: #24221e; --ok: #6cc07c;
-      --logo-hold: 50%;
+      --logo-bottom: #2e2b27;
     }
   }
   * { box-sizing: border-box; }
@@ -39,8 +39,9 @@
   h1 { font-size: 2.6rem; line-height: 1.1; margin: 0 0 12px; letter-spacing: -0.02em; display: flex; align-items: center; gap: 14px; }
   h1 .mark { width: 0.95em; height: 0.95em; flex: none; }
   h1 .ai { color: var(--accent); }
-  /* Logo text: each color fades from its usual shade at the top to a dark
-     warm grey at the bottom, a step lighter than the dark-mode background. */
+  /* Logo text: each color holds its usual shade for the top half, then fades
+     toward the page background: to a light warm grey in light mode and a dark
+     warm grey in dark mode, each a step away from the background itself. */
   @supports ((-webkit-background-clip: text) or (background-clip: text)) {
     h1 .word, h1 .ai {
       -webkit-background-clip: text; background-clip: text;
