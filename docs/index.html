@@ -21,12 +21,13 @@
   :root {
     --bg: #fbfaf7; --fg: #1d1b18; --muted: #6b665e; --line: #e4e0d8;
     --card: #ffffff; --accent: #b4532a; --code-bg: #f3f0ea; --ok: #2f7a3d;
-    --logo-bottom: #2e2b27;
+    --logo-bottom: #2e2b27; --logo-hold: 0%;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #161513; --fg: #ece8e1; --muted: #a39d93; --line: #2c2a26;
       --card: #1e1c19; --accent: #e07b4c; --code-bg: #24221e; --ok: #6cc07c;
+      --logo-hold: 50%;
     }
   }
   * { box-sizing: border-box; }
@@ -45,8 +46,8 @@
       -webkit-background-clip: text; background-clip: text;
       -webkit-text-fill-color: transparent; color: transparent;
     }
-    h1 .word { background-image: linear-gradient(to bottom, var(--fg), var(--logo-bottom)); }
-    h1 .ai { background-image: linear-gradient(to bottom, var(--accent), var(--logo-bottom)); }
+    h1 .word { background-image: linear-gradient(to bottom, var(--fg) var(--logo-hold), var(--logo-bottom)); }
+    h1 .ai { background-image: linear-gradient(to bottom, var(--accent) var(--logo-hold), var(--logo-bottom)); }
   }
   h2 { font-size: 1.3rem; margin: 48px 0 12px; }
   .lede { font-size: 1.2rem; color: var(--muted); margin: 0 0 28px; }
