@@ -81,6 +81,13 @@ export class SwankClient extends EventEmitter {
     })
   }
 
+  /** Picks restart INDEX for the debugger at LEVEL in THREAD. */
+  invokeRestart(thread, level, index) {
+    if (!this.connected) throw new Error('not connected to Swank')
+    const id = this.nextId++
+    this.sendRaw(`(:emacs-rex (swank:invoke-nth-restart-for-emacs ${level} ${index}) nil ${thread} ${id})`)
+  }
+
   onData(chunk) {
     this.buffer = Buffer.concat([this.buffer, chunk])
     while (this.buffer.length >= 6) {
@@ -123,21 +130,27 @@ export class SwankClient extends EventEmitter {
         this.send([new Sym(':emacs-pong'), m[1], m[2]])
         return
       case ':DEBUG': {
-        // (:debug thread level condition restarts frames conts)
-        const [, thread, level, condition, restarts] = m
-        const text = Array.isArray(condition) ? condition.filter(x => typeof x === 'string').join(' ') : ''
-        this.emit('debug', text)
-        const abortAt = Array.isArray(restarts)
-          ? restarts.findIndex(r => Array.isArray(r) && /ABORT/i.test(String(r[0])))
-          : -1
-        const id = this.nextId++
-        if (abortAt >= 0) {
-          this.sendRaw(`(:emacs-rex (swank:invoke-nth-restart-for-emacs ${level} ${abortAt}) nil ${thread} ${id})`)
-        } else {
-          this.sendRaw(`(:emacs-rex (swank:throw-to-toplevel) nil ${thread} ${id})`)
-        }
+        // (:debug thread level (message type extras) ((name desc) ...) ((n desc ...) ...) conts)
+        // A thread is waiting in the debugger; someone picks a restart later.
+        const [, thread, level, condition, restarts, frames] = m
+        const cond = Array.isArray(condition) ? condition : []
+        this.emit('debug', {
+          thread,
+          level,
+          message: typeof cond[0] === 'string' ? cond[0] : 'error',
+          type: typeof cond[1] === 'string' ? cond[1].trim().replace(/^\[Condition of type (.*)\]$/, '$1') : '',
+          restarts: (Array.isArray(restarts) ? restarts : []).map(r => ({
+            name: String(Array.isArray(r) ? r[0] : r),
+            description: Array.isArray(r) && typeof r[1] === 'string' ? r[1] : '',
+          })),
+          frames: (Array.isArray(frames) ? frames : []).map(f => (Array.isArray(f) ? String(f[1] ?? '') : String(f))),
+        })
         return
       }
+      case ':DEBUG-RETURN':
+        // (:debug-return thread level stepping): that debugger level is gone.
+        this.emit('debug-return', { thread: m[1], level: m[2] })
+        return
       case ':READ-STRING':
         // (:read-string thread tag): nothing to type here; answer end of line.
         this.emit('log', 'Lisp asked for input; pAIrens answered an empty line')

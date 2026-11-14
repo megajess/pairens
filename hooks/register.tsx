@@ -1,15 +1,17 @@
 // pAIrens: a Lisp REPL you and Claude share.
 //
-// Milestone 1: Common Lisp over Swank. The mod starts a Node helper
-// (helper/pairens-helper.mjs) that holds the Swank connection; the mod sends
-// it requests over HTTP on a Unix socket and reads its events from stdout.
+// Common Lisp over Swank. The mod starts a Node helper
+// (helper/pairens-helper.mjs) that holds the Swank connection and the shared
+// history; the mod sends it requests over HTTP on a Unix socket and reads its
+// events from stdout. The helper also serves the browser page (browser/) and
+// the v1 API on 127.0.0.1; the page is another view of the same history.
 // A reload restarts the helper; an SBCL it launched is not its child, so the
 // image survives and the new helper reconnects through ./.swank-port.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { PairensEntry, PairensMode, PairensStatus } from '../types'
+import type { PairensDebug, PairensEntry, PairensMode, PairensStatus } from '../types'
 
 type Engine = EngineInterface
 
@@ -30,32 +32,22 @@ const modeAtom = atom({ plugin: 'pairens', key: 'mode' } as const, 'ask' as Pair
 const tabAtom = atom({ plugin: 'pairens', key: 'tab' } as const, 'user', { shape: 'tab-1' })
 const scrollBackAtom = atom({ plugin: 'pairens', key: 'scrollBack' } as const, 0, { shape: 'scroll-1' })
 const draftAtom = atom({ plugin: 'pairens', key: 'draft' } as const, '', { shape: 'draft-1' })
+const debugsAtom = atom({ plugin: 'pairens', key: 'debugs' } as const, [] as PairensDebug[], { shape: 'debugs-1' })
 
 // ---------------------------------------------------------------------------
 // The helper process
 
-type HelperEntry = {
-  id: string
-  session: string
-  origin: 'user' | 'claude'
-  code: string
-  status: 'running' | 'ok' | 'error'
-  startedAt: number
-  output?: string
-  values?: string[]
-  package?: string
-  error?: string
-  errorType?: string
-}
-
 type ClaudeRequest = { id: string; prompt: string; value: string; package: string; session: string }
 
 type HelperEvent =
-  | { type: 'ready'; socket: string }
-  | { type: 'status'; status: Omit<PairensStatus, 'helper'> }
-  | { type: 'entry'; entry: HelperEntry }
-  | { type: 'output'; text: string }
+  | { type: 'ready'; socket: string; url: string | null }
+  | { type: 'status'; status: Omit<PairensStatus, 'helper' | 'browserUrl'> }
+  | { type: 'entry'; entry: PairensEntry }
   | { type: 'claude-request'; request: ClaudeRequest }
+  | { type: 'set-mode'; mode: string }
+  | { type: 'clear'; session: string }
+  | { type: 'debug'; debug: PairensDebug }
+  | { type: 'debug-done'; id: string }
   | { type: 'log'; text: string }
 
 let socketPath = ''
@@ -82,6 +74,15 @@ async function startHelper($: Engine, cwd: string) {
   socketPath = `/tmp/pairens-${crypto.randomUUID().slice(0, 8)}.sock`
   const node = await findNode($)
   const script = `${$.plugin.root}/helper/pairens-helper.mjs`
+  // After a reload, reconnect to what the person was connected to, and stay
+  // disconnected if they had disconnected on purpose.
+  const before = await read($, statusAtom)
+  const reconnect =
+    before.connected && before.port
+      ? ['--prefer', `${before.host ?? '127.0.0.1'}:${before.port}`]
+      : before.disconnectedByUser
+        ? ['--no-auto', '1']
+        : []
   await update($, statusAtom, (s): PairensStatus => ({ ...s, helper: 'starting' }))
 
   void (async () => {
@@ -89,7 +90,7 @@ async function startHelper($: Engine, cwd: string) {
     try {
       const lastJob = (await read($, entriesAtom)).reduce((n, x) => Math.max(n, Number(/^j(\d+)$/.exec(x.id)?.[1] ?? 0)), 0)
       const child = $.process.spawn({
-        argv: [node, script, '--socket', socketPath, '--cwd', cwd, '--job-start', String(lastJob)],
+        argv: [node, script, '--socket', socketPath, '--cwd', cwd, '--job-start', String(lastJob), ...reconnect],
         cwd,
       })
       for await (const chunk of child) {
@@ -139,37 +140,45 @@ function parseAddress(text: string): { host: string; port: number } {
     : { host: arg.slice(0, at) || '127.0.0.1', port: Number(arg.slice(at + 1)) }
 }
 
+/** Adds an entry the mod made (a question or Claude's reply) and shares it. */
 async function pushEntry($: Engine, entry: PairensEntry) {
   await update($, entriesAtom, list => [...(list ?? []), entry].slice(-MAX_ENTRIES))
+  void helper($, '/entry', { entry }).catch(() => {})
+}
+
+async function clearSession($: Engine, session: string, { share = true } = {}) {
+  await update($, entriesAtom, list => (list ?? []).filter(x => x.session !== session))
+  if (share) void helper($, '/clear', { session }).catch(() => {})
+}
+
+async function openBrowser($: Engine): Promise<string> {
+  const url = (await read($, statusAtom)).browserUrl
+  if (!url) return 'The pAIrens browser page is not available (the helper has no local web listener).'
+  const r = await $.process.run(['/usr/bin/open', url])
+  return r.exitCode === 0 ? 'Opened the pAIrens REPL in your browser.' : `Could not open the browser: ${r.stderr.trim()}`
 }
 
 async function onHelperEvent($: Engine, event: HelperEvent) {
   switch (event.type) {
-    case 'ready':
+    case 'ready': {
       markReady()
-      await update($, statusAtom, (s): PairensStatus => ({ ...s, helper: 'ready' }))
+      await update($, statusAtom, (s): PairensStatus => ({ ...s, helper: 'ready', browserUrl: event.url }))
+      // Share this session's history and mode with the new helper.
+      const r = await helper<{ debugs?: PairensDebug[] }>($, '/sync', {
+        entries: await read($, entriesAtom),
+        mode: await read($, modeAtom),
+      }).catch(() => ({ debugs: [] as PairensDebug[] }))
+      await update($, debugsAtom, () => r.debugs ?? [])
       return
+    }
     case 'status':
       await update($, statusAtom, (s): PairensStatus => ({ ...s, ...event.status, helper: 'ready' }))
       return
     case 'entry': {
-      const h = event.entry
-      const entry: PairensEntry = {
-        id: h.id,
-        session: h.session,
-        origin: h.origin,
-        kind: 'eval',
-        text: h.code,
-        status: h.status,
-        package: h.package,
-        output: h.output,
-        values: h.values,
-        error: h.error,
-        at: h.startedAt,
-      }
+      const entry = event.entry
       await update($, entriesAtom, list => {
         const all = list ?? []
-        const at = all.findIndex(x => x.kind === 'eval' && x.id === h.id && x.at === h.startedAt)
+        const at = all.findIndex(x => x.id === entry.id && x.at === entry.at)
         if (at < 0) return [...all, entry].slice(-MAX_ENTRIES)
         const copy = all.slice()
         copy[at] = entry
@@ -177,25 +186,21 @@ async function onHelperEvent($: Engine, event: HelperEvent) {
       })
       return
     }
-    case 'output':
-      await update($, entriesAtom, list => {
-        const all = list ?? []
-        const last = all[all.length - 1]
-        if (last && last.kind === 'output' && last.session === 'user')
-          return [...all.slice(0, -1), { ...last, text: last.text + event.text }]
-        const entry: PairensEntry = {
-          id: `out-${Date.now()}`,
-          session: 'user',
-          origin: 'lisp',
-          kind: 'output',
-          text: event.text,
-          at: Date.now(),
-        }
-        return [...all, entry].slice(-MAX_ENTRIES)
-      })
-      return
     case 'claude-request':
       void askClaude($, event.request)
+      return
+    case 'set-mode':
+      if (isMode(event.mode)) await setMode($, event.mode)
+      return
+    case 'clear':
+      await clearSession($, event.session, { share: false })
+      return
+    case 'debug':
+      await update($, debugsAtom, list => [...(list ?? []).filter(d => d.id !== event.debug.id), event.debug])
+      $.ui.toast(`Lisp debugger: ${event.debug.message.slice(0, 120)}`)
+      return
+    case 'debug-done':
+      await update($, debugsAtom, list => (list ?? []).filter(d => d.id !== event.id))
       return
     case 'log':
       $.ui.log(`pairens: ${event.text}`, { to: 'debug' })
@@ -268,6 +273,17 @@ async function deliverReply($: Engine, req: ClaudeRequest, answer: string) {
 
 const shortPackage = (p?: string) => (!p || p === 'COMMON-LISP-USER' ? 'CL-USER' : p)
 
+function formatDebug(d: PairensDebug): string {
+  return [
+    `Debugger ${d.id} (thread ${d.thread}, level ${d.level}): ${d.message}`,
+    `  condition type: ${d.type}`,
+    '  restarts:',
+    ...d.restarts.map((r, i) => `    ${i}: [${r.name}] ${r.description}`),
+    '  backtrace (top):',
+    ...d.frames.slice(0, 12).map((f, i) => `    ${i}: ${f}`),
+  ].join('\n')
+}
+
 function formatEntry(x: PairensEntry): string {
   switch (x.kind) {
     case 'eval': {
@@ -297,10 +313,8 @@ function entryText(x: PairensEntry): string {
   return parts.join('\n')
 }
 
-function formatEvalResult(x: PairensEntry | HelperEntry): string {
-  const isHelper = 'code' in x
-  const code = isHelper ? (x as HelperEntry).code : (x as PairensEntry).text
-  const lines = [`${shortPackage(x.package)}> ${code}`]
+function formatEvalResult(x: PairensEntry): string {
+  const lines = [`${shortPackage(x.package)}> ${x.text}`]
   if (x.output) lines.push('Output:', x.output.trimEnd())
   if (x.status === 'running')
     lines.push(`Still running as job ${x.id} in session "${x.session}". Fetch it later with job_result.`)
@@ -322,6 +336,7 @@ const isMode = (s: string): s is PairensMode => s === 'ask' || s === 'auto' || s
 async function setMode($: Engine, m: PairensMode) {
   await update($, modeAtom, () => m)
   await $.store.set('mode', m)
+  void helper($, '/mode', { mode: m }).catch(() => {})
 }
 
 async function readOnly($: Engine, session: string, code: string): Promise<boolean> {
@@ -390,7 +405,23 @@ export const register: Register = on => {
     })
     await $.tool.register({
       name: 'status',
-      description: "pAIrens connection status (Lisp implementation, Swank port), the person's eval mode, and each session's current package.",
+      description:
+        "pAIrens connection status (Lisp implementation, Swank port), the person's eval mode, each session's current package, and any Lisp threads waiting in the debugger (with their restarts).",
+    })
+    await $.tool.register({
+      name: 'debug_restart',
+      description:
+        'Pick a restart for a Lisp thread waiting in the debugger (for example after an error on a game\'s main thread). ' +
+        'status lists waiting debuggers with their restarts; the person sees the same in pAIrens and may pick one themselves. ' +
+        'Follows the person\'s eval mode: ask needs approval, read-only refuses.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          debugger: { type: 'string', description: 'The debugger id from status, e.g. "d123-1".' },
+          restart: { type: 'string', description: 'The restart, by name (e.g. "RETRY-FRAME", "ABORT") or by its number.' },
+        },
+        required: ['debugger', 'restart'],
+      },
     })
 
     await $.command.register({ name: 'pairens', description: 'Open the pAIrens Lisp REPL pane' })
@@ -405,6 +436,11 @@ export const register: Register = on => {
       argumentHint: '[host:]port',
     })
     await $.command.register({ name: 'pairens-launch', description: 'Start SBCL with Swank for pAIrens' })
+    await $.command.register({ name: 'pairens-browser', description: 'Open the pAIrens REPL in your web browser' })
+    await $.command.register({
+      name: 'pairens-disconnect',
+      description: 'Disconnect pAIrens from the Lisp image (the Lisp keeps running)',
+    })
 
     await startHelper($, e.cwd)
     // Opened unasked: the surface seats it once one attaches and has room;
@@ -446,6 +482,19 @@ export const register: Register = on => {
     return { text: 'pAIrens is starting SBCL with Swank; the pane shows when it is connected.' }
   })
 
+  on('command.run', { command: 'pairens-browser' }, async $ => ({ text: await openBrowser($) }))
+
+  on('command.run', { command: 'pairens-disconnect' }, async $ => {
+    const before = await read($, statusAtom)
+    if (!before.connected) return { text: 'pAIrens is not connected to a Lisp image.' }
+    try {
+      await helper($, '/disconnect', {})
+      return { text: `pAIrens disconnected from ${before.impl} on ${before.host}:${before.port}. The Lisp keeps running; /pairens-connect ${before.port} reconnects.` }
+    } catch (err) {
+      return { text: `pAIrens could not disconnect: ${String(err)}` }
+    }
+  })
+
   // --- (pairens:claude ...) turns --------------------------------------------
 
   on('turn.start', async ($, e, next) => {
@@ -485,6 +534,15 @@ export const register: Register = on => {
     return { decision: 'ask', reason: `pAIrens (ask mode): Claude wants to evaluate this in session "${session}"` }
   }).catch(() => ({ decision: 'ask', reason: 'pAIrens could not check this eval' }))
 
+  on('tool.check', { tool: 'mcp__pairens__debug_restart' }, async ($, e) => {
+    const input = (e.input ?? {}) as { debugger?: string; restart?: string }
+    const m = await read($, modeAtom)
+    if (m === 'auto') return { decision: 'allow', reason: 'pAIrens is in auto mode' }
+    if (m === 'read-only')
+      return { decision: 'deny', reason: 'pAIrens is in read-only mode; ask the person to pick the restart.' }
+    return { decision: 'ask', reason: `pAIrens (ask mode): Claude wants to pick restart ${input.restart} in debugger ${input.debugger}` }
+  }).catch(() => ({ decision: 'ask', reason: 'pAIrens could not check this restart' }))
+
   on('tool.check', { tool: 'mcp__pairens__history' }, allowRead)
   on('tool.check', { tool: 'mcp__pairens__job_result' }, allowRead)
   on('tool.check', { tool: 'mcp__pairens__status' }, allowRead)
@@ -499,7 +557,7 @@ export const register: Register = on => {
       return { deny: 'pAIrens is in read-only mode and this code does more than inspect.' }
     const timeoutMs = Math.min(55, Math.max(1, input.timeout_seconds ?? 30)) * 1000
     try {
-      const entry = await helper<HelperEntry>($, '/eval', { session, code, origin: 'claude', timeoutMs })
+      const entry = await helper<PairensEntry>($, '/eval', { session, code, origin: 'claude', timeoutMs })
       if (session !== 'user') await update($, tabAtom, t => t ?? 'user')
       return { result: formatEvalResult(entry), ...(entry.status === 'error' ? { isError: true as const } : {}) }
     } catch (err) {
@@ -517,7 +575,7 @@ export const register: Register = on => {
   on('tool.call', { tool: 'mcp__pairens__job_result' }, async ($, e) => {
     const input = e as unknown as { job: string; wait_seconds?: number }
     try {
-      const entry = await helper<HelperEntry>($, '/job', {
+      const entry = await helper<PairensEntry>($, '/job', {
         id: input.job,
         timeoutMs: Math.min(55, Math.max(0, input.wait_seconds ?? 0)) * 1000,
       })
@@ -527,16 +585,44 @@ export const register: Register = on => {
     }
   })
 
+  on('tool.call', { tool: 'mcp__pairens__debug_restart' }, async ($, e) => {
+    const input = e as unknown as { debugger?: string; restart?: string | number }
+    if ((await read($, modeAtom)) === 'read-only') return { deny: 'pAIrens is in read-only mode.' }
+    const d = (await read($, debugsAtom)).find(x => x.id === input.debugger)
+    if (!d) return { result: `pAIrens: no debugger ${input.debugger} is waiting (it may have been resolved).`, isError: true as const }
+    const wanted = String(input.restart ?? '').trim()
+    const index = /^\d+$/.test(wanted) ? Number(wanted) : d.restarts.findIndex(r => r.name.toUpperCase() === wanted.toUpperCase())
+    if (index < 0 || index >= d.restarts.length)
+      return { result: `pAIrens: no restart "${wanted}". Restarts:\n${d.restarts.map((r, i) => `${i}: ${r.name}`).join('\n')}`, isError: true as const }
+    try {
+      const r = await helper<{ restart: string }>($, '/restart', { id: d.id, index })
+      return { result: `Invoked restart ${r.restart} in debugger ${d.id}.` }
+    } catch (err) {
+      return { result: `pAIrens: ${String(err)}`, isError: true as const }
+    }
+  })
+
   on('tool.call', { tool: 'mcp__pairens__status' }, async $ => {
     const s = await read($, statusAtom)
     const m = await read($, modeAtom)
+    const debugs = await read($, debugsAtom)
     let sessions = ''
     try {
       const r = await helper<{ sessions: { name: string; package: string }[] }>($, '/sessions', {})
       sessions = r.sessions.map(x => `  ${x.name}: ${shortPackage(x.package)}`).join('\n')
     } catch {}
     const conn = s.connected ? `Connected to ${s.impl} via Swank on ${s.host}:${s.port}` : `Not connected${s.error ? ` (${s.error})` : ''}`
-    return { result: [conn, `Mode: ${MODE_HELP[m]}`, sessions ? `Sessions:\n${sessions}` : 'No sessions yet.'].join('\n') }
+    return {
+      result: [
+        conn,
+        `Mode: ${MODE_HELP[m]}`,
+        sessions ? `Sessions:\n${sessions}` : 'No sessions yet.',
+        debugs.length ? `Waiting in the debugger:\n${debugs.map(formatDebug).join('\n\n')}` : 'No Lisp thread is in the debugger.',
+        s.browserUrl ? 'The person can also open this REPL in a browser with /pairens-browser.' : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    }
   })
 
   // --- the pane ---------------------------------------------------------------
@@ -562,6 +648,7 @@ export const register: Register = on => {
     const scrollBack = Math.min(await read($, scrollBackAtom), Math.max(0, shown.length - 1))
     const pkg = shortPackage([...shown].reverse().find(x => x.package)?.package)
     const draft = await read($, draftAtom)
+    const debugs = await read($, debugsAtom)
     const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
 
     if (e.surface === 'mobile') {
@@ -653,8 +740,28 @@ export const register: Register = on => {
           {rows.length ? rows : [<Text key="empty" dimColor>Nothing evaluated in "{selected}" yet. Try (pairens:claude "hello!")</Text>]}
         </Box>
 
-        {/* pinned: editor, then status and controls */}
+        {/* pinned: debugger, editor, then status and controls */}
         <Box key="footer" flexDirection="column" flexShrink={0} gap={1} paddingTop={1} paddingBottom={1}>
+          {debugs.map(d => (
+            <Box key={`debug-${d.id}`} flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1}>
+              <Text color="warning" bold>
+                Debugger: {d.message}
+              </Text>
+              <Text dimColor>
+                {d.type} · thread {d.thread} · level {d.level}
+              </Text>
+              <Box flexDirection="row" gap={1} flexWrap="wrap">
+                {d.restarts.map((r, index) => (
+                  <Button
+                    key={`restart-${d.id}-${index}`}
+                    onPress={() => void helper($, '/restart', { id: d.id, index }).catch(err => $.ui.toast(`pAIrens: ${String(err)}`))}
+                  >
+                    {r.name}
+                  </Button>
+                ))}
+              </Box>
+            </Box>
+          ))}
           {shown.length > 1 ? (
             <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
               <Button
@@ -698,9 +805,26 @@ export const register: Register = on => {
             />
           </Box>
 
-          <Text dimColor={!status.connected} color={status.connected ? 'success' : undefined}>
-            {statusLine}
-          </Text>
+          <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+            <Text dimColor={!status.connected} color={status.connected ? 'success' : undefined}>
+              {statusLine}
+            </Text>
+            {status.connected ? (
+              <Button
+                key="disconnect"
+                plain
+                dimColor
+                onPress={() => void helper($, '/disconnect', {}).catch(err => $.ui.toast(`pAIrens: ${String(err)}`))}
+              >
+                ⏏ disconnect
+              </Button>
+            ) : null}
+            {status.browserUrl ? (
+              <Button key="browser" plain dimColor onPress={() => void openBrowser($).then(t => $.ui.toast(t))}>
+                ↗ open in browser
+              </Button>
+            ) : null}
+          </Box>
 
           {!status.connected && !status.launching ? (
             <Box flexDirection="column" gap={1}>
@@ -745,7 +869,7 @@ export const register: Register = on => {
                 {name}
               </Button>
             ))}
-            <Button key="clear" dimColor onPress={() => void update($, entriesAtom, list => (list ?? []).filter(x => x.session !== selected))}>
+            <Button key="clear" dimColor onPress={() => void clearSession($, selected)}>
               clear
             </Button>
           </Box>

@@ -25,6 +25,23 @@ export type PairensStatus = {
   impl?: string | null
   launching?: boolean
   error?: string | null
+  /** The person disconnected on purpose; a reload doesn't reconnect. */
+  disconnectedByUser?: boolean
+  /** The browser page's address, key included, while the helper serves it. */
+  browserUrl?: string | null
+}
+
+/** A Lisp thread waiting in the debugger, as the helper reports it. */
+export type PairensDebug = {
+  /** `d<thread>-<level>` */
+  id: string
+  thread: number
+  level: number
+  message: string
+  type: string
+  restarts: { name: string; description: string }[]
+  frames: string[]
+  at: number
 }
 
 /** ask: Claude's evals go through the permission prompt; auto: they run;
@@ -42,6 +59,8 @@ declare module 'claude-code' {
       draft: Shaped<string>
       /** how many history entries the pane is scrolled back from the newest */
       scrollBack: Shaped<number>
+      /** Lisp threads waiting in the debugger */
+      debugs: Shaped<PairensDebug[]>
     }
   }
 }

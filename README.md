@@ -10,9 +10,11 @@ Website: <https://pairens.dev>
 ## What it does
 
 - **A REPL pane beside the chat.** The input stays pinned at the bottom, and the history shows output, values and errors. Each session (tab) keeps its own current package and `*`, `**`, `***`, all in one shared image.
+- **Or in its own browser window.** `/pairens-browser` opens the same REPL as a local web page: a real code editor with Lisp highlighting, paren matching and ↑/↓ input history, plus normal scrolling and copy/paste. It shares one history with the pane, and the page runs only on your machine (`127.0.0.1`), protected by a private key.
 - **Ask Claude from your REPL.** `(pairens:claude "why is this nil?")` returns right away, and Claude's answer shows up in the REPL. To send a value along: `(pairens:claude "explain this" (my-fn 3))`. This also works from SLIME or Sly connected to the same image, where the reply prints as `;;` comments.
 - **Claude uses the REPL too.** It inspects and evaluates code in your running image, and every eval shows in the pane marked `✻`. Long-running work goes into a session of Claude's own.
-- **You choose how Claude's evals run** (`/pairens-mode`):
+- **Debugger with restarts.** When a Lisp thread hits an error (a game's main loop, a worker), pAIrens shows the condition, its restarts (`RETRY`, `ABORT`, your own) and a backtrace. You pick one, or let Claude.
+- **You choose how Claude's evals and restarts run** (`/pairens-mode`):
   - `ask`: you approve each one.
   - `auto`: they run straight away.
   - `read-only`: only inspection is allowed (`describe`, `documentation`, `apropos`, …).
@@ -53,11 +55,15 @@ In the Claude desktop app:
 | | |
 |---|---|
 | `/pairens` | Open the pane |
+| `/pairens-browser` | Open the REPL in your web browser |
 | `/pairens-launch` | Start SBCL with Swank (it keeps running after the mod reloads) |
 | `/pairens-connect [host:]port` | Connect to a running Swank |
+| `/pairens-disconnect` | Disconnect (the Lisp keeps running) |
 | `/pairens-mode ask \| auto \| read-only` | Set how Claude's evals run |
 
 On startup, pAIrens connects on its own to the port in `./.swank-port`, or failing that to port 4005.
+
+The browser page lives at `http://127.0.0.1:4747/`, or the next free port. Its full address, including the key, is in `~/.pairens/endpoint.json`. It works while a Claude Code session with pAIrens is running, and otherwise says it's offline and reconnects by itself.
 
 ## Support the project
 

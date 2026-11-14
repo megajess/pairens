@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>pAIrens REPL</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext x='2' y='25' font-size='26' font-family='monospace' fill='%23e07b4c'%3E%CE%BB%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/app.css">
+<script type="module" src="/app.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header class="bar">
+      <div class="brand">p<span class="ai">AI</span>rens</div>
+      <div id="status" class="status" role="status">connecting…</div>
+      <button id="disconnect" class="subtle" title="Disconnect from the Lisp image; the Lisp keeps running" hidden>⏏ disconnect</button>
+      <div class="spacer"></div>
+      <div class="modes" role="group" aria-label="How Claude's evals run">
+        <span class="label">Claude</span>
+        <button data-mode="ask" title="You approve each eval Claude wants to run">ask</button>
+        <button data-mode="auto" title="Claude evals freely; every eval shows here">auto</button>
+        <button data-mode="read-only" title="Claude may only inspect (describe, documentation, apropos…)">read-only</button>
+      </div>
+    </header>
+
+    <section id="connect" class="connect" hidden>
+      <button id="launch" class="primary">Launch SBCL</button>
+      <form id="connect-form">
+        <input id="connect-addr" placeholder="4005 or host:port" aria-label="Swank address">
+        <button type="submit">Connect</button>
+      </form>
+    </section>
+
+    <nav class="tabs" id="tabs" aria-label="Sessions"></nav>
+
+    <section id="debugs" class="debugs" aria-live="polite"></section>
+
+    <main id="history" class="history" aria-live="polite"></main>
+
+    <footer class="input">
+      <div class="prompt"><span id="prompt">CL-USER&gt;</span><span class="hint">Enter evaluates a complete form · Shift+Enter new line · ↑/↓ history</span></div>
+      <div id="editor" class="editor"></div>
+    </footer>
+
+    <div id="offline" class="offline" hidden>
+      <div class="offline-card">
+        <strong>pAIrens is offline</strong>
+        <p>The Claude Code session running pAIrens isn't reachable. Start it (or reopen the Claude app); this page reconnects on its own.</p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

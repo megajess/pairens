@@ -76,13 +76,15 @@
     <div class="card"><h3>Ask from the REPL</h3><p><code>(pairens:claude "…")</code> sends a question, a value too if you like, and the answer lands back in your REPL. Works from SLIME too.</p></div>
     <div class="card"><h3>Claude uses it too</h3><p>Claude inspects and evaluates code in your running image, with every eval shown and marked. Long jobs go in a session of its own.</p></div>
     <div class="card"><h3>You set the rules</h3><p>Choose <code>ask</code>, <code>auto</code> or <code>read-only</code> to decide how Claude's evals run.</p></div>
+    <div class="card"><h3>Debugger with restarts</h3><p>When a thread errors, you see the condition, restarts and backtrace, and pick one. Or let Claude.</p></div>
+    <div class="card"><h3>Its own window</h3><p>Open the REPL in your browser: a real editor, normal scrolling and copy/paste, the same shared history.</p></div>
   </div>
 
   <h2>Languages</h2>
   <ul>
     <li><strong>Common Lisp</strong> over Swank. Available now; pAIrens can launch SBCL for you or connect to a running Swank.</li>
     <li><strong>Clojure / ClojureScript</strong> over nREPL. Coming soon.</li>
-    <li><strong>A REPL in its own browser window.</strong> Coming next.</li>
+    <li><strong>A REPL in its own browser window.</strong> Available now: <code>/pairens-browser</code> opens the same REPL as a local page with a real code editor, paren matching and input history.</li>
   </ul>
 
   <h2>Install</h2>
