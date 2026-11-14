@@ -70,6 +70,19 @@ On startup, pAIrens connects on its own to the port in `./.swank-port`, or faili
 
 The browser page lives at `http://127.0.0.1:4747/`, or the next free port. Its full address, including the key, is in `~/.pairens/endpoint.json`. It works while a Claude Code session with pAIrens is running, and otherwise says it's offline and reconnects by itself.
 
+## What pAIrens runs and connects to
+
+Everything pAIrens does happens on your machine. It has no server of its own, sends no analytics, and talks to nothing on the internet.
+
+- **A helper process.** When the mod loads, it runs `node helper/pairens-helper.mjs` from the plugin folder. The helper holds the REPL connection and the shared history, and stops when Claude Code unloads the mod.
+- **A Unix socket between the mod and the helper**, at `/tmp/pairens-<random>.sock`.
+- **The browser page**, an HTTP server on `127.0.0.1` only, port 4747 or one of the next nine. Its API answers only requests that carry the random key in `~/.pairens/endpoint.json`, and it refuses requests from other web pages.
+- **Your Lisp image.** The helper opens a plain TCP connection to Swank: the port in `./.swank-port`, or `127.0.0.1:4005`, or the host and port you give `/pairens-connect`. Swank isn't encrypted, so connect to another machine only over a network you trust.
+- **SBCL, when you ask for it.** **Launch SBCL** or `/pairens-launch` starts `sbcl` in the background with `/bin/sh` and `nohup`, in the folder Claude Code is working in. It loads Quicklisp from `~/quicklisp` or `~/.quicklisp` if you have it, and loads Swank through Quicklisp. If Swank isn't installed yet, Quicklisp downloads it from its usual servers. SBCL then loads `lisp/pairens.lisp`, starts Swank on a free port, and writes that port to `./.swank-port`. SBCL keeps running after the mod stops, so your image survives a reload. To find `sbcl`, the helper also looks in `/opt/homebrew/bin` and `/usr/local/bin`.
+- **Files it writes:** `~/.pairens/endpoint.json` (readable only by you), SBCL's output in `~/.pairens/logs/`, and `./.swank-port` when it launches SBCL.
+- **Questions for Claude** go to the Claude Code session you're already in, as ordinary turns. pAIrens doesn't call any API itself.
+- **The browser page's editor** is a bundle of CodeMirror and marked. [`browser/vendor/README.md`](https://github.com/megajess/pairens/blob/main/plugin/browser/vendor/README.md) lists the versions, licenses and source.
+
 ## Support the project
 
 pAIrens is free and MIT-licensed. If it's useful to you, you can [sponsor its development](https://github.com/sponsors/megajess).
