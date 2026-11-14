@@ -1,0 +1,12 @@
+{
+  "name": "pairens",
+  "owner": { "name": "Jesse Suter (megajess)", "url": "https://github.com/megajess" },
+  "description": "pAIrens, a Lisp REPL you and Claude share, as a Claude Code mod.",
+  "plugins": [
+    {
+      "name": "pairens",
+      "source": "./",
+      "description": "A Lisp REPL you and Claude share: Common Lisp over Swank, with Clojure/ClojureScript over nREPL coming."
+    }
+  ]
+}

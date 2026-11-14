@@ -1,0 +1,40 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Written by Claude Code when it loads the mod (it also ignores itself)
+.claude-plugin/types/
+
+# REPL ports and runtime files
+.swank-port
+.nrepl-port
+.pairens/
+
+# Common Lisp build output
+*.fasl
+*.fas
+*.dx64fsl
+*.lx64fsl
+
+# Clojure / ClojureScript tooling (for the nREPL milestone)
+.cpcache/
+.shadow-cljs/
+.lsp/.cache/
+.clj-kondo/.cache/
+target/
+
+# Node
+node_modules/
+
+# Logs and editor leftovers
+*.log
+*~
+*.swp
+\#*\#
+.#*
+.idea/
+.vscode/

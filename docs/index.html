@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pAIrens: a Lisp REPL you and Claude share</title>
+<meta name="description" content="pAIrens is a Claude Code mod: a Lisp REPL beside the chat, connected to your live image, that you and Claude both use.">
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1d1b18; --muted: #6b665e; --line: #e4e0d8;
+    --card: #ffffff; --accent: #b4532a; --code-bg: #f3f0ea; --ok: #2f7a3d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161513; --fg: #ece8e1; --muted: #a39d93; --line: #2c2a26;
+      --card: #1e1c19; --accent: #e07b4c; --code-bg: #24221e; --ok: #6cc07c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 17px/1.6 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 56px 16px 72px; }
+  h1 { font-size: 2.6rem; line-height: 1.1; margin: 0 0 12px; letter-spacing: -0.02em; }
+  h1 .ai { color: var(--accent); }
+  h2 { font-size: 1.3rem; margin: 48px 0 12px; }
+  .lede { font-size: 1.2rem; color: var(--muted); margin: 0 0 28px; }
+  a { color: var(--accent); }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.92em; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; line-height: 1.5; margin: 12px 0;
+  }
+  pre code { background: none; padding: 0; }
+  .repl .prompt { color: var(--muted); }
+  .repl .val { color: var(--ok); }
+  .repl .claude { color: var(--accent); }
+  .buttons { display: flex; gap: 12px; flex-wrap: wrap; }
+  .button {
+    display: inline-block; padding: 10px 18px; border-radius: 8px; text-decoration: none;
+    border: 1px solid var(--line); color: var(--fg); background: var(--card); font-weight: 600;
+  }
+  .button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  ul { padding-left: 1.2em; }
+  li { margin: 6px 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .card h3 { margin: 0 0 6px; font-size: 1rem; }
+  .card p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+  footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>p<span class="ai">AI</span>rens</h1>
+  <p class="lede">A Lisp REPL you and Claude share. pAIrens is a mod for Claude Code that puts a REPL beside the chat, connected to your live Lisp image. You both use it, and each of you sees what the other did.</p>
+
+  <div class="buttons">
+    <a class="button primary" href="https://github.com/megajess/pairens#install">Install</a>
+    <a class="button" href="https://github.com/megajess/pairens">GitHub</a>
+    <a class="button" href="https://github.com/sponsors/megajess">♥ Sponsor</a>
+  </div>
+
+<pre class="repl"><code><span class="prompt">CL-USER&gt;</span> (defun greet (who) (format t "Hello, ~a!~%" who) (length who))
+<span class="val">⇒ GREET</span>
+<span class="prompt">CL-USER&gt;</span> (pairens:claude "what does GREET return, and why?" (greet "Lisp"))
+<span class="val">⇒ :SENT</span>
+<span class="claude">✻ Claude</span>  It returns 4: the last form is (length who). The greeting
+          is printed as a side effect; FORMAT's NIL is discarded.</code></pre>
+
+  <h2>What it does</h2>
+  <div class="grid">
+    <div class="card"><h3>REPL beside the chat</h3><p>A pane with your history, output, values and errors, and an input pinned at the bottom. Each tab is a session with its own package.</p></div>
+    <div class="card"><h3>Ask from the REPL</h3><p><code>(pairens:claude "…")</code> sends a question, a value too if you like, and the answer lands back in your REPL. Works from SLIME too.</p></div>
+    <div class="card"><h3>Claude uses it too</h3><p>Claude inspects and evaluates code in your running image, with every eval shown and marked. Long jobs go in a session of its own.</p></div>
+    <div class="card"><h3>You set the rules</h3><p>Choose <code>ask</code>, <code>auto</code> or <code>read-only</code> to decide how Claude's evals run.</p></div>
+  </div>
+
+  <h2>Languages</h2>
+  <ul>
+    <li><strong>Common Lisp</strong> over Swank. Available now; pAIrens can launch SBCL for you or connect to a running Swank.</li>
+    <li><strong>Clojure / ClojureScript</strong> over nREPL. Coming soon.</li>
+    <li><strong>A REPL in its own browser window.</strong> Coming next.</li>
+  </ul>
+
+  <h2>Install</h2>
+  <p>In a Claude Code terminal session:</p>
+<pre><code>/plugin install pairens --marketplace megajess/pairens</code></pre>
+  <p>In the Claude desktop app, click <strong>+</strong> next to the prompt box, then <strong>Plugins</strong>. Choose <strong>Add marketplace</strong> with <code>megajess/pairens</code>, then <strong>Add plugin</strong>. You'll need Node.js, plus SBCL and Quicklisp if you want pAIrens to start Lisp for you. The <a href="https://github.com/megajess/pairens#requirements">README</a> has the details.</p>
+
+  <h2>Your subscription, your session</h2>
+  <p>pAIrens works inside the Claude Code session you're already signed in to. It needs no API key and never sees your credentials. Questions you ask from the REPL are ordinary turns in that session.</p>
+
+  <footer>
+    MIT licensed · © 2026 Jesse Suter (megajess) · pAIrens is an independent project, not made, endorsed or sponsored by Anthropic.
+  </footer>
+</main>
+</body>
+</html>
