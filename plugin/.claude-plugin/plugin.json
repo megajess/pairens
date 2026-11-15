@@ -1,6 +1,6 @@
 {
   "name": "pairens",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "pAIrens: a Lisp REPL you and Claude share (Common Lisp over Swank; Clojure and ClojureScript over nREPL).",
   "author": { "name": "Jesse Suter (megajess)", "url": "https://github.com/megajess" },
   "homepage": "https://pairens.dev/",
