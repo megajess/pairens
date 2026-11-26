@@ -6,8 +6,8 @@ export type PairensEntry = {
   id: string
   session: string
   origin: PairensOrigin
-  kind: 'eval' | 'ask' | 'reply' | 'output' | 'note'
-  /** eval: the code; ask: the prompt; reply: Claude's answer; output/note: the text */
+  kind: 'eval' | 'ask' | 'reply' | 'output' | 'note' | 'help'
+  /** eval: the code; ask: the prompt; reply: Claude's answer; output/note/help: the text */
   text: string
   status?: 'running' | 'ok' | 'error'
   package?: string
@@ -58,6 +58,69 @@ export type PairensDebug = {
   at: number
 }
 
+/** One thing a prefix could complete to, as the image reports it. */
+export type Completion = {
+  /** The whole token to put in place of the prefix (`mapcar`, `sb-ext:gc`, `s/join`). */
+  text: string
+  /** `function`, `macro`, `special`, `variable`, `class`, `keyword`, `namespace` or `symbol`. */
+  kind: string
+  /** The function's argument list, printed short; '' when none. */
+  args: string
+}
+
+/** What a symbol names, as the image describes it for Option-click. */
+export type Description = {
+  /** The symbol, qualified only where the session can't see it as is. */
+  name: string
+  kind: string
+  /** Its argument list, printed short; '' when none. */
+  args: string
+  /** Its documentation string; '' when none. */
+  doc: string
+}
+
+/** The props the pane hands its REPL Client (hooks/repl.tsx): plain data only. */
+export type ReplProps = {
+  /** The input's prompt, `CL-USER>`. */
+  prompt: string
+  /** The session shown; a change returns the transcript to the bottom. */
+  session: string
+  /** The session's history drawn above the input, oldest first. */
+  entries: PairensEntry[]
+  /** The person's earlier forms in this session, oldest first, for Up and Down. */
+  history: string[]
+  /** The pane holds the keyboard (Pane's isFocused). */
+  paneFocused: boolean
+  /** Clipboard text the hooks read for a paste the REPL asked for. */
+  paste: { id: number; text: string } | null
+  /** What the image offered for the REPL's last Tab, by the request's id. */
+  completion: { id: number; items: Completion[] } | null
+  /** What the image said of the REPL's last Option-click, by the request's id (null: nothing known). */
+  described: { id: number; description: Description | null } | null
+}
+
+/** The props of the session tabs, a second instance of hooks/repl.tsx. */
+export type TabsProps = {
+  view: 'tabs'
+  /** The session shown. */
+  session: string
+  /** Every session, in tab order. */
+  sessions: string[]
+}
+
+/** What the REPL Client posts to the hooks module. */
+export type ReplPost =
+  | { type: 'eval'; code: string }
+  | { type: 'paste'; id: number }
+  | { type: 'copy'; text: string }
+  | { type: 'tab'; session: string }
+  /** The input changed: scroll the pane to its end, where the input is. */
+  | { type: 'end' }
+  /** Tab after PREFIX: ask the image what it could complete to. */
+  | { type: 'complete'; id: number; prefix: string }
+  /** Option-click on TOKEN: ask the image what it names. */
+  | { type: 'describe'; id: number; token: string }
+
 /** ask: Claude's evals go through the permission prompt; auto: they run;
  * read-only: only inspection calls run. */
 export type PairensMode = 'ask' | 'auto' | 'read-only'
@@ -75,6 +138,14 @@ declare module 'claude-code' {
       scrollBack: Shaped<number>
       /** Lisp threads waiting in the debugger */
       debugs: Shaped<PairensDebug[]>
+      /** clipboard text read for the REPL's last Cmd+V */
+      paste: Shaped<{ id: number; text: string } | null>
+      /** what the image offered for the REPL's last Tab */
+      completion: Shaped<{ id: number; items: Completion[] } | null>
+      /** what the image said of the REPL's last Option-click */
+      described: Shaped<{ id: number; description: Description | null } | null>
+      /** the REPL Client failed on this surface: the pane draws the classic view there */
+      replFault: Shaped<{ surface: string; reason: string } | null>
     }
   }
 }

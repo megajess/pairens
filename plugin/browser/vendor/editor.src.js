@@ -2,8 +2,8 @@
 // and Clojure modes, REPL keys, highlighting for history rows, and safe
 // Markdown for Claude's replies. Built by `npm run build` into ../browser/vendor/editor.js.
 
-import { EditorState, Compartment } from '@codemirror/state'
-import { EditorView, keymap, placeholder, drawSelection, highlightActiveLine } from '@codemirror/view'
+import { EditorState, Compartment, RangeSetBuilder } from '@codemirror/state'
+import { EditorView, keymap, placeholder, drawSelection, highlightActiveLine, Decoration, ViewPlugin } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, insertNewlineAndIndent, indentWithTab } from '@codemirror/commands'
 import { StreamLanguage, bracketMatching, indentOnInput, syntaxHighlighting, HighlightStyle } from '@codemirror/language'
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete'
@@ -25,9 +25,76 @@ const lispHighlight = HighlightStyle.define([
   { tag: [t.number, t.bool, t.atom], color: 'var(--tok-number)' },
   { tag: [t.keyword, t.atom], color: 'var(--tok-keyword)' },
   { tag: [t.definitionKeyword, t.special(t.variableName)], color: 'var(--tok-def)' },
-  { tag: t.bracket, color: 'var(--tok-bracket)' },
   { tag: t.meta, color: 'var(--tok-meta)' },
 ])
+
+// --- parens coloured by depth ------------------------------------------------
+
+/** How many colours the parens cycle through: --paren-0 … --paren-5 in app.css. */
+const PAREN_COLOURS = 6
+
+/**
+ * Each paren, bracket and brace of TEXT that is syntax (outside strings,
+ * #"regexes", ; and #| |# comments, and #\ or \ characters), with its depth:
+ * 0 outermost, an opener and its closer sharing one.
+ */
+export function parenDepths(text) {
+  const out = []
+  let depth = 0
+  let i = 0
+  while (i < text.length) {
+    const c = text[i]
+    if (c === ';') {
+      while (i < text.length && text[i] !== '\n') i++
+    } else if (c === '#' && text[i + 1] === '|') {
+      let nest = 1
+      i += 2
+      while (i < text.length && nest > 0) {
+        if (text[i] === '|' && text[i + 1] === '#') { nest--; i += 2 }
+        else if (text[i] === '#' && text[i + 1] === '|') { nest++; i += 2 }
+        else i++
+      }
+    } else if (c === '"' || (c === '#' && text[i + 1] === '"')) {
+      i += c === '#' ? 2 : 1
+      while (i < text.length && text[i] !== '"') i += text[i] === '\\' ? 2 : 1
+      i++
+    } else if (c === '#' && text[i + 1] === '\\') {
+      i += 3 // #\( and the like: the character itself, whatever it is
+    } else if (c === '\\') {
+      i += 2 // Clojure's \( and the like
+    } else if (c === '(' || c === '[' || c === '{') {
+      out.push({ at: i, depth: depth++ })
+      i++
+    } else if (c === ')' || c === ']' || c === '}') {
+      depth = Math.max(0, depth - 1)
+      out.push({ at: i, depth })
+      i++
+    } else i++
+  }
+  return out
+}
+
+const parenClass = depth => `paren-d${depth % PAREN_COLOURS}`
+
+/** The editor's parens, coloured by depth, redone on every change (inputs are short). */
+const parenColours = ViewPlugin.fromClass(
+  class {
+    constructor(view) {
+      this.decorations = this.build(view)
+    }
+    update(update) {
+      if (update.docChanged) this.decorations = this.build(update.view)
+    }
+    build(view) {
+      const builder = new RangeSetBuilder()
+      for (const { at, depth } of parenDepths(view.state.doc.toString())) {
+        builder.add(at, at + 1, Decoration.mark({ class: parenClass(depth) }))
+      }
+      return builder.finish()
+    }
+  },
+  { decorations: v => v.decorations },
+)
 
 /** A line for Claude rather than Lisp: `pairens:` then a space or newline. */
 export const MESSAGE_PREFIX = /^\s*pairens:(?=\s)/i
@@ -174,6 +241,7 @@ export function createEditor({ parent, onSubmit, history: pastInputs = () => [],
         highlightActiveLine(),
         languageSlot.of(languageFor(current)),
         syntaxHighlighting(lispHighlight),
+        parenColours,
         bracketMatching(),
         closeBrackets(),
         indentOnInput(),
@@ -200,20 +268,33 @@ export function createEditor({ parent, onSubmit, history: pastInputs = () => [],
   }
 }
 
-/** Fills ELEMENT with TEXT highlighted as LANGUAGE (tok-* classes). */
+/** Fills ELEMENT with TEXT highlighted as LANGUAGE (tok-* classes), its parens coloured by depth. */
 export function highlightLisp(text, element, language = 'common-lisp') {
   element.textContent = ''
   const tree = languageFor(language).parser.parse(text)
+  const parens = new Map(parenDepths(text).map(p => [p.at, p.depth]))
   let at = 0
-  const add = (to, cls) => {
-    if (to <= at) return
-    const piece = text.slice(at, to)
+  const put = (piece, cls) => {
+    if (!piece) return
     if (cls) {
       const span = document.createElement('span')
       span.className = cls
       span.textContent = piece
       element.appendChild(span)
     } else element.appendChild(document.createTextNode(piece))
+  }
+  // Up to TO in class CLS, each paren in it a span of its own with its depth's class.
+  const add = (to, cls) => {
+    if (to <= at) return
+    let from = at
+    for (let k = at; k < to; k++) {
+      const depth = parens.get(k)
+      if (depth === undefined) continue
+      put(text.slice(from, k), cls)
+      put(text[k], cls ? `${cls} ${parenClass(depth)}` : parenClass(depth))
+      from = k + 1
+    }
+    put(text.slice(from, to), cls)
     at = to
   }
   highlightTree(tree, classHighlighter, (from, to, cls) => {

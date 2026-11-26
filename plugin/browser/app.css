@@ -4,23 +4,48 @@
   --ok: #2f7a3d; --err: #b3261e; --claude: #b4532a; --warn-bg: #fff4e5; --warn-line: #f0c48a;
   --tok-comment: #8a857c; --tok-string: #2f7a3d; --tok-number: #8a4fbf; --tok-keyword: #1f5fb3;
   --tok-def: #b4532a; --tok-bracket: #8a857c; --tok-meta: #8a4fbf;
+  --paren-0: #1f5fb3; --paren-1: #2f7a3d; --paren-2: #a86f00; --paren-3: #8a4fbf; --paren-4: #0f7d8c; --paren-5: #b4532a;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
 }
+/* Dark: follows the system setting unless the theme picker chose a mode. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme]) {
     --bg: #161513; --fg: #ece8e1; --muted: #a39d93; --line: #2c2a26;
     --panel: #1e1c19; --soft: #24221e; --accent: #e07b4c; --accent-fg: #161513;
     --ok: #6cc07c; --err: #ff8a80; --claude: #e07b4c; --warn-bg: #2b2117; --warn-line: #6b4a24;
     --tok-comment: #8a857c; --tok-string: #8fd19e; --tok-number: #c9a4f0; --tok-keyword: #8ab4f8;
     --tok-def: #f0a07a; --tok-bracket: #8a857c; --tok-meta: #c9a4f0;
+    --paren-0: #8ab4f8; --paren-1: #8fd19e; --paren-2: #f2c56b; --paren-3: #c9a4f0; --paren-4: #6fd3df; --paren-5: #f0a07a;
+    color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #161513; --fg: #ece8e1; --muted: #a39d93; --line: #2c2a26;
+  --panel: #1e1c19; --soft: #24221e; --accent: #e07b4c; --accent-fg: #161513;
+  --ok: #6cc07c; --err: #ff8a80; --claude: #e07b4c; --warn-bg: #2b2117; --warn-line: #6b4a24;
+  --tok-comment: #8a857c; --tok-string: #8fd19e; --tok-number: #c9a4f0; --tok-keyword: #8ab4f8;
+  --tok-def: #f0a07a; --tok-bracket: #8a857c; --tok-meta: #c9a4f0;
+  --paren-0: #8ab4f8; --paren-1: #8fd19e; --paren-2: #f2c56b; --paren-3: #c9a4f0; --paren-4: #6fd3df; --paren-5: #f0a07a;
+  color-scheme: dark;
+}
+/* Terminal: an old green-screen monitor. P1-style phosphor green on black,
+   monospace throughout, a soft glow and faint scanlines. */
+:root[data-theme="terminal"] {
+  --bg: #030a04; --fg: #4dff7a; --muted: #2fb455; --line: #14461f;
+  --panel: #061309; --soft: #071a0d; --accent: #b4ffc6; --accent-fg: #030a04;
+  --ok: #4dff7a; --err: #ff6b5e; --claude: #b4ffc6; --warn-bg: #141005; --warn-line: #6b5a1a;
+  --tok-comment: #2a8f45; --tok-string: #b4ffc6; --tok-number: #8affc1; --tok-keyword: #d6ffe0;
+  --tok-def: #ffffff; --tok-bracket: #2fb455; --tok-meta: #8affc1;
+  --paren-0: #4dff7a; --paren-1: #b4ffc6; --paren-2: #2fb455; --paren-3: #8affc1; --paren-4: #d6ffe0; --paren-5: #7dffa0;
+  --font: var(--mono); color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
   background: var(--bg); color: var(--fg);
-  font: 15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  font: 15px/1.5 var(--font);
 }
 button {
   font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line);
@@ -111,6 +136,14 @@ button[hidden] { display: none; }
 .tok-definition, .tok-variableName.tok-definition { color: var(--tok-def); }
 .tok-punctuation, .tok-bracket { color: var(--tok-bracket); }
 .tok-meta { color: var(--tok-meta); }
+/* Parens coloured by depth, in history rows and the editor; after the token
+   rules so a paren's depth colour wins. */
+.paren-d0 { color: var(--paren-0); }
+.paren-d1 { color: var(--paren-1); }
+.paren-d2 { color: var(--paren-2); }
+.paren-d3 { color: var(--paren-3); }
+.paren-d4 { color: var(--paren-4); }
+.paren-d5 { color: var(--paren-5); }
 
 /* --- input --- */
 .input { border-top: 1px solid var(--line); padding: 8px 16px 14px; background: var(--panel); }
@@ -129,6 +162,74 @@ button[hidden] { display: none; }
 .editor .cm-selectionBackground, .editor .cm-focused .cm-selectionBackground { background: color-mix(in srgb, var(--accent) 25%, transparent) !important; }
 .editor .cm-cursor { border-left-color: var(--fg); }
 
+/* --- theme picker: the same menu as pairens.dev. Each option is drawn in its
+   own theme's colors, whatever the page is showing. --- */
+/* margin-left: auto keeps it at the right edge when the bar wraps, so the
+   right-anchored menu never opens off-screen. */
+.theme-picker { position: relative; z-index: 20; margin-left: auto; }
+.bar .theme-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 8px 3px 10px; border-radius: 999px;
+  font-weight: 600; font-size: 0.85rem; line-height: 1.2;
+}
+.theme-picker svg { width: 16px; height: 16px; flex: none; }
+.theme-picker [hidden] { display: none; }
+.theme-toggle .chevron { width: 14px; height: 14px; color: var(--muted); }
+.theme-toggle[aria-expanded="true"] .chevron { transform: rotate(180deg); }
+.theme-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; min-width: 168px;
+  margin: 0; padding: 6px; list-style: none; display: grid; gap: 4px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+.theme-menu li { margin: 0; }
+.theme-menu .theme-option {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 8px; border: 1px solid transparent;
+  font: 600 0.85rem/1.2 var(--opt-font); background: var(--opt-bg); color: var(--opt-fg);
+  text-align: left;
+}
+.theme-option .check { margin-left: auto; visibility: hidden; color: var(--opt-accent); }
+.theme-option[aria-checked="true"] .check { visibility: visible; }
+.theme-menu .theme-option:hover, .theme-menu .theme-option:focus-visible { border-color: var(--opt-accent); }
+.theme-toggle:focus-visible, .theme-option:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.theme-option[data-value="light"] {
+  --opt-bg: #fbfaf7; --opt-fg: #1d1b18; --opt-accent: #b4532a;
+  --opt-font: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+}
+.theme-option[data-value="dark"] {
+  --opt-bg: #161513; --opt-fg: #ece8e1; --opt-accent: #e07b4c;
+  --opt-font: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+}
+.theme-menu .theme-option[data-value="terminal"] {
+  --opt-bg: #030a04; --opt-fg: #4dff7a; --opt-accent: #4dff7a;
+  --opt-font: ui-monospace, "SF Mono", Menlo, monospace;
+  border-radius: 0; text-shadow: 0 0 5px rgba(77, 255, 122, 0.5);
+  background-image: repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0.25) 0 1px, transparent 1px 3px);
+}
+.theme-menu .theme-option[data-value="light"] { border-color: #e4e0d8; }
+.theme-menu .theme-option[data-value="system"] {
+  --opt-bg: #fbfaf7; --opt-fg: #1d1b18; --opt-accent: #e07b4c;
+  --opt-font: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  background: linear-gradient(110deg, #fbfaf7 0 62%, #161513 62% 100%);
+  border-color: #e4e0d8;
+}
+
+/* --- terminal-mode details --- */
+[data-theme="terminal"] body { text-shadow: 0 0 5px rgba(77, 255, 122, 0.45); }
+[data-theme="terminal"] button, [data-theme="terminal"] input, [data-theme="terminal"] .editor,
+[data-theme="terminal"] .debug, [data-theme="terminal"] .offline-card,
+[data-theme="terminal"] .entry.reply .md pre, [data-theme="terminal"] .entry.reply .md code,
+[data-theme="terminal"] .theme-menu { border-radius: 0; }
+[data-theme="terminal"] button.primary, [data-theme="terminal"] button.on { text-shadow: none; }
+[data-theme="terminal"] ::selection { background: var(--fg); color: var(--bg); text-shadow: none; }
+[data-theme="terminal"] body::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 10;
+  background:
+    repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0.22) 0 1px, transparent 1px 3px),
+    radial-gradient(ellipse at center, transparent 60%, rgba(0, 0, 0, 0.45) 100%);
+}
+
 /* --- offline overlay --- */
 .offline { position: fixed; inset: 0; background: color-mix(in srgb, var(--bg) 70%, transparent); display: grid; place-items: center; }
 .offline[hidden] { display: none; }
@@ -138,5 +239,6 @@ button[hidden] { display: none; }
 @media (max-width: 600px) {
   .prompt .hint { display: none; }
   .bar { padding: 8px 12px; }
+  #theme-label { display: none; }
   .history, .input, .tabs, .debugs, .connect, .cljs { padding-left: 12px; padding-right: 12px; }
 }

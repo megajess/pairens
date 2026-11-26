@@ -11,8 +11,9 @@
 ;;;;
 ;;;; plus the entry points the helper calls: REX-EVAL (evaluate in a named
 ;;;; pAIrens session), READ-ONLY-CODE-P (the read-only mode's check),
-;;;; TAKE-OUTBOX (the helper's long poll for CLAUDE calls) and DELIVER (print
-;;;; Claude's reply where the CLAUDE call came from).
+;;;; TAKE-OUTBOX (the helper's long poll for CLAUDE calls), DELIVER (print
+;;;; Claude's reply where the CLAUDE call came from) and COMPLETIONS (what the
+;;;; REPL's Tab offers).
 
 (defpackage #:pairens
   (:use #:cl)
@@ -199,4 +200,106 @@ Returns (:ok OUTPUT VALUES PACKAGE) or (:error MESSAGE OUTPUT PACKAGE TYPE)."
                 for form = (read in nil eof)
                 until (eq form eof)
                 always (read-only-form-p form))))
+    (serious-condition () nil)))
+
+;;; ------------------------------------------------------------------
+;;; Completion: what the REPL's Tab offers
+
+(defun symbol-text (symbol)
+  "SYMBOL's name as typed at the REPL: lower case unless it has lower-case letters."
+  (let ((name (symbol-name symbol)))
+    (if (string= name (string-upcase name)) (string-downcase name) name)))
+
+(defun lambda-list-text (symbol)
+  "SYMBOL's function's lambda list, printed short, or NIL."
+  (let ((reader #+sbcl (find-symbol "FUNCTION-LAMBDA-LIST" "SB-INTROSPECT") #-sbcl nil))
+    (when (and reader (fboundp reader) (fboundp symbol) (not (special-operator-p symbol)))
+      (ignore-errors
+       (let ((list (funcall reader (or (macro-function symbol) (fdefinition symbol))))
+             (*package* (or (symbol-package symbol) *package*))
+             (*print-case* :downcase)
+             (*print-pretty* nil)
+             (*print-length* 12))
+         (if list (truncated (princ-to-string list) 80) "()"))))))
+
+(defun symbol-kind (symbol)
+  (cond ((special-operator-p symbol) "special")
+        ((macro-function symbol) "macro")
+        ((fboundp symbol) "function")
+        ((keywordp symbol) "keyword")
+        ((boundp symbol) "variable")
+        ((find-class symbol nil) "class")
+        (t "symbol")))
+
+(defun completions (session-name prefix &optional (limit 60))
+  "The symbols PREFIX could complete to in the session's package: a list of
+(TEXT KIND ARGLIST) with TEXT the whole token to insert, shortest and then
+alphabetical first, at most LIMIT. PREFIX may be `pkg:name`, `pkg::name` or
+`:keyword`. Matching ignores case."
+  (handler-case
+      (let* ((*package* (session-package (session session-name)))
+             (colon (position #\: prefix :from-end t))
+             (qualifier (if colon (subseq prefix 0 (1+ colon)) ""))
+             (stem (if colon (subseq prefix (1+ colon)) prefix))
+             (package-name (and colon (string-right-trim ":" qualifier)))
+             (internal (search "::" qualifier))
+             (package (cond ((null colon) *package*)
+                            ((string= package-name "") (find-package "KEYWORD"))
+                            (t (find-package (string-upcase package-name)))))
+             (seen (make-hash-table :test 'equal))
+             (found '()))
+        (when package
+          (flet ((consider (symbol)
+                   (let ((name (symbol-name symbol)))
+                     (when (and (<= (length stem) (length name))
+                                (string-equal stem name :end2 (length stem))
+                                (not (gethash name seen)))
+                       (setf (gethash name seen) t)
+                       (push (list (concatenate 'string qualifier (symbol-text symbol))
+                                   (symbol-kind symbol)
+                                   (or (lambda-list-text symbol) ""))
+                             found)))))
+            (cond ((or (null colon) internal (eq package (find-package "KEYWORD")))
+                   (do-symbols (symbol package) (consider symbol)))
+                  (t (do-external-symbols (symbol package) (consider symbol))))))
+        (let ((sorted (sort found (lambda (a b)
+                                    (let ((la (length (first a))) (lb (length (first b))))
+                                      (if (= la lb) (string< (first a) (first b)) (< la lb)))))))
+          (subseq sorted 0 (min limit (length sorted)))))
+    (serious-condition () nil)))
+
+;;; ------------------------------------------------------------------
+;;; Describing a symbol: what the REPL's Option-click shows
+
+(defun describe-symbol (session-name token)
+  "TOKEN as the session's package reads it (`name`, `pkg:name`, `pkg::name`,
+`:keyword`), described for the REPL: (NAME KIND ARGLIST DOCUMENTATION), or NIL
+when no such symbol exists. Nothing is interned."
+  (handler-case
+      (let* ((*package* (session-package (session session-name)))
+             (token (string-left-trim "'#`," token))
+             (colon (position #\: token :from-end t))
+             (stem (if colon (subseq token (1+ colon)) token))
+             (package-name (and colon (string-right-trim ":" (subseq token 0 (1+ colon)))))
+             (package (cond ((null colon) *package*)
+                            ((string= package-name "") (find-package "KEYWORD"))
+                            (t (find-package (string-upcase package-name)))))
+             (symbol (and package
+                          (plusp (length stem))
+                          (or (find-symbol (string-upcase stem) package)
+                              (find-symbol stem package)))))
+        (when (and symbol (or (fboundp symbol) (boundp symbol) (find-class symbol nil)
+                              (documentation symbol 'function) (documentation symbol 'variable)))
+          (let ((*print-case* :downcase))
+            (list (if (or (null (symbol-package symbol))
+                          (keywordp symbol)
+                          (eq (find-symbol (symbol-name symbol) *package*) symbol))
+                      (if (keywordp symbol) (format nil ":~a" (symbol-text symbol)) (symbol-text symbol))
+                      (format nil "~(~a~):~a" (package-name (symbol-package symbol)) (symbol-text symbol)))
+                  (symbol-kind symbol)
+                  (or (lambda-list-text symbol) "")
+                  (or (and (fboundp symbol) (documentation symbol 'function))
+                      (documentation symbol 'variable)
+                      (and (find-class symbol nil) (documentation (find-class symbol) t))
+                      "")))))
     (serious-condition () nil)))

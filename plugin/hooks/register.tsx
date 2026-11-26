@@ -11,7 +11,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { PairensDebug, PairensEntry, PairensMode, PairensStatus } from '../types'
+import type { Completion, Description, PairensDebug, PairensEntry, PairensMode, PairensStatus, ReplProps, TabsProps } from '../types'
 
 type Engine = EngineInterface
 
@@ -33,6 +33,24 @@ const tabAtom = atom({ plugin: 'pairens', key: 'tab' } as const, 'user', { shape
 const scrollBackAtom = atom({ plugin: 'pairens', key: 'scrollBack' } as const, 0, { shape: 'scroll-1' })
 const draftAtom = atom({ plugin: 'pairens', key: 'draft' } as const, '', { shape: 'draft-1' })
 const debugsAtom = atom({ plugin: 'pairens', key: 'debugs' } as const, [] as PairensDebug[], { shape: 'debugs-1' })
+// The REPL Client's: what the hooks hand it through props, and a fault that
+// sends the pane back to the classic view on that surface.
+const pasteAtom = atom({ plugin: 'pairens', key: 'paste' } as const, null as { id: number; text: string } | null, {
+  shape: 'paste-1',
+})
+const completionAtom = atom(
+  { plugin: 'pairens', key: 'completion' } as const,
+  null as { id: number; items: Completion[] } | null,
+  { shape: 'completion-1' },
+)
+const describedAtom = atom(
+  { plugin: 'pairens', key: 'described' } as const,
+  null as { id: number; description: Description | null } | null,
+  { shape: 'described-1' },
+)
+const replFaultAtom = atom({ plugin: 'pairens', key: 'replFault' } as const, null as { surface: string; reason: string } | null, {
+  shape: 'repl-fault-1',
+})
 
 // ---------------------------------------------------------------------------
 // The helper process
@@ -169,6 +187,67 @@ async function clearSession($: Engine, session: string, { share = true } = {}) {
   if (share) void helper($, '/clear', { session }).catch(() => {})
 }
 
+/**
+ * The one browser-pane open the person's last press of "open in Claude's
+ * browser" allows without a prompt: that exact page address, for a short
+ * while, once. Anything else asks as usual.
+ */
+let browserOpenAllowed: { url: string; until: number } | null = null
+const BROWSER_OPEN_WINDOW_MS = 2 * 60 * 1000
+
+/**
+ * A `tool.check` hook on the browser pane's tools that open a URL
+ * (`preview_start`, `navigate`): allows the one open a press asked for, else
+ * hands the call on to the session's own rules and prompts.
+ */
+async function allowPressedBrowserOpen(
+  _$: Engine,
+  e: { input: unknown; agentId?: string; ceiling?: 'allow' | 'ask' | 'deny' },
+  next: (e: never) => Promise<{ decision: 'allow' | 'ask' | 'deny'; reason?: string }>,
+) {
+  const url = (e.input as { url?: unknown } | null)?.url
+  const allowed = browserOpenAllowed
+  if (allowed && Date.now() < allowed.until && url === allowed.url && !e.agentId && e.ceiling !== 'deny') {
+    browserOpenAllowed = null
+    return { decision: 'allow' as const, reason: 'pAIrens: the person pressed "open in Claude\'s browser" for this page' }
+  }
+  return next(e as never)
+}
+
+/**
+ * Asks Claude, with a turn of its own, to open the pAIrens page in the
+ * desktop app's browser pane: the mod has no way to open that pane itself.
+ */
+async function openInClaudesBrowser($: Engine): Promise<string> {
+  const url = (await read($, statusAtom)).browserUrl
+  if (!url) return 'The pAIrens browser page is not available (the helper has no local web listener).'
+  browserOpenAllowed = { url, until: Date.now() + BROWSER_OPEN_WINDOW_MS }
+  const text = [
+    "[pAIrens] The person pressed \"open in Claude's browser\" in the pAIrens pane.",
+    '',
+    `Open this page in your built-in browser (the desktop app's browser pane): ${url}`,
+    'Then make sure the browser pane is showing (show the preview pane): loading a page in a hidden pane does not bring it into view.',
+    '',
+    "It is the pAIrens REPL page, served by the pAIrens helper on this machine (127.0.0.1). The address carries the page's key: don't repeat it in your reply. Reply in one short line once it is open.",
+  ].join('\n')
+  try {
+    await $.prompt.submit({ text })
+    return "Asked Claude to open the pAIrens REPL in its browser."
+  } catch (err) {
+    browserOpenAllowed = null
+    return `Could not ask Claude: ${String(err)}`
+  }
+}
+
+/** pAIrens' site, the manifest's homepage. */
+const ABOUT_URL = 'https://pairens.dev/'
+
+/** Opens pAIrens' site in the person's default browser. */
+async function openAbout($: Engine): Promise<string> {
+  const r = await $.process.run(['/usr/bin/open', ABOUT_URL])
+  return r.exitCode === 0 ? 'Opened pairens.dev in your browser.' : `Could not open pairens.dev: ${r.stderr.trim()}`
+}
+
 async function openBrowser($: Engine): Promise<string> {
   const url = (await read($, statusAtom)).browserUrl
   if (!url) return 'The pAIrens browser page is not available (the helper has no local web listener).'
@@ -202,6 +281,7 @@ async function onHelperEvent($: Engine, event: HelperEvent) {
         copy[at] = entry
         return copy
       })
+      if (entry.session === (await read($, tabAtom))) void toEnd($)
       return
     }
     case 'claude-request':
@@ -231,6 +311,12 @@ async function onHelperEvent($: Engine, event: HelperEvent) {
 
 async function askClaude($: Engine, req: ClaudeRequest) {
   const session = req.session === 'editor' ? 'editor' : req.session
+  // "help" is answered here, with no Claude turn.
+  if (req.prompt.trim().toLowerCase() === 'help' && !req.value) {
+    await showHelp($, session)
+    if (req.session === 'editor') await helper($, '/deliver', { id: req.id, answer: HELP_TEXT }).catch(() => undefined)
+    return
+  }
   await pushEntry($, {
     id: `ask-${req.id}`,
     session,
@@ -271,6 +357,52 @@ async function askClaude($: Engine, req: ClaudeRequest) {
     waitingForTurn.delete(req.id)
     await pushEntry($, { id: `note-${req.id}`, session, origin: 'lisp', kind: 'note', text: `Could not send to Claude: ${String(err)}`, at: Date.now() })
   }
+}
+
+/** What `pairens: help`, `(pairens:claude "help")` and /pairens-help print. */
+const HELP_TEXT = `pAIrens help
+
+THE REPL
+  Enter             evaluate a complete form (inside an open form, a new line)
+  Shift+Enter       a new line
+  Up / Down         your earlier forms in this session
+  Ctrl+Space        complete the symbol before the cursor (also Ctrl+I; Tab in a terminal)
+  Option+click      a function's argument list and documentation
+  drag, Cmd+C       select and copy anything in the transcript
+  Cmd+V / X / A / Z paste, cut, select all, undo
+  Ctrl+A / E / K / U  line start, line end, delete to the end, clear the input
+  Esc               hand the keyboard back to Claude Code
+  Parens pair as you type; the one at the cursor and its partner are underlined.
+
+ASKING CLAUDE
+  pairens: <question>         ask Claude from here; the answer prints in this REPL
+  (pairens:claude "why?" x)   from Common Lisp code, optionally with a value
+  (pairens/claude "why?" x)   from Clojure code
+  An orange bar marks Claude's evals and answers; a blue bar, your results.
+
+SESSIONS
+  The tabs above the status line are sessions: each has its own package
+  (namespace) and *, **, ***, all in one image. "user" is yours; Claude may
+  open its own. "clear" empties the session shown.
+
+CLAUDE'S PERMISSION MODE
+  ask         you approve each eval Claude wants to run
+  auto        Claude's evals run
+  read-only   only code that inspects runs
+
+COMMANDS (in Claude Code's prompt)
+  /pairens                          open this pane
+  /pairens-connect [host:]port      connect to a running Swank or nREPL (default 4005)
+  /pairens-launch [sbcl | clojure]  start SBCL with Swank, or Clojure with nREPL
+  /pairens-disconnect               disconnect (the image keeps running)
+  /pairens-mode <mode>              set Claude's permission mode
+  /pairens-cljs [build | quit]      ClojureScript in a shadow-cljs build, or back
+  /pairens-browser                  this REPL in your web browser
+  /pairens-help                     this help (or type: pairens: help)`
+
+/** Prints the help in SESSION's history. */
+async function showHelp($: Engine, session: string) {
+  await pushEntry($, { id: `help-${Date.now()}`, session, origin: 'lisp', kind: 'help', text: HELP_TEXT, at: Date.now() })
 }
 
 async function deliverReply($: Engine, req: ClaudeRequest, answer: string) {
@@ -355,6 +487,13 @@ const MODE_HELP: Record<PairensMode, string> = {
   'read-only': 'Read-only: Claude may only inspect (describe, documentation, apropos; in Clojure doc, source, dir, …)',
 }
 
+/** The pane's permission-mode picker: what each mode lets Claude do. */
+const MODE_OPTIONS = [
+  { value: 'ask', label: 'ask · approve each of Claude\'s evals' },
+  { value: 'auto', label: 'auto · Claude\'s evals run' },
+  { value: 'read-only', label: 'read-only · only code that inspects runs' },
+] as const
+
 const isMode = (s: string): s is PairensMode => s === 'ask' || s === 'auto' || s === 'read-only'
 
 async function setMode($: Engine, m: PairensMode) {
@@ -377,8 +516,50 @@ async function allowRead() {
   return { decision: 'allow' as const, reason: 'pAIrens: read-only' }
 }
 
+/** What the person typed in the pane: Lisp, or "pairens: <text>", a question for Claude. */
+function evalIn($: Engine, session: string, code: string) {
+  if (!code.trim()) return
+  void update($, scrollBackAtom, () => 0)
+  const question = MESSAGE_PREFIX.test(code) ? code.replace(MESSAGE_PREFIX, '').trim() : null
+  const sent = question
+    ? helper($, '/api/v1/ask', { session, text: question })
+    : helper($, '/eval', { session, code, origin: 'user', timeoutMs: 0 })
+  void sent.catch(err => $.ui.toast(`pAIrens: ${String(err)}`))
+}
+
+/** Keeps the pane at its end, as a terminal REPL does, once its redraw is in. */
+async function toEnd($: Engine) {
+  try {
+    await $.ui.scroll({ in: PANE, to: 'end' })
+    // The redraw an update starts may land after the first scroll: once more.
+    await $.clock.sleep(80)
+    await $.ui.scroll({ in: PANE, to: 'end' })
+  } catch {
+    // Scrolling is a nicety; it never fails what asked for it.
+  }
+}
+
+/** Plain data for a Client's props: no undefined anywhere. */
+const plain = <T,>(x: T): T => JSON.parse(JSON.stringify(x)) as T
+
+/** A Client's props stay under 100,000 characters: the newest entries that fit in about 60,000. */
+function newestThatFit(list: PairensEntry[], budget = 60000): PairensEntry[] {
+  const out: PairensEntry[] = []
+  let size = 0
+  for (let i = list.length - 1; i >= 0; i--) {
+    const x = list[i]
+    if (!x) continue
+    size += JSON.stringify(x).length
+    if (size > budget) break
+    out.unshift(x)
+  }
+  return out
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    // A reload brings new code: give the REPL Client another try.
+    await update($, replFaultAtom, () => null)
     const stored = await $.store.get('mode')
     if (typeof stored === 'string' && isMode(stored)) await update($, modeAtom, () => stored)
 
@@ -472,6 +653,7 @@ export const register: Register = on => {
       argumentHint: '[build | quit]',
     })
     await $.command.register({ name: 'pairens-browser', description: 'Open the pAIrens REPL in your web browser' })
+    await $.command.register({ name: 'pairens-help', description: 'Show pAIrens help in the REPL: keys, asking Claude, sessions, commands' })
     await $.command.register({
       name: 'pairens-disconnect',
       description: 'Disconnect pAIrens from the image (the Lisp or Clojure process keeps running)',
@@ -492,6 +674,13 @@ export const register: Register = on => {
   on('command.run', { command: 'pairens' }, async $ => {
     const r = await $.ui.open({ id: PANE, title: 'pAIrens' })
     return { text: r.isPlaced ? 'pAIrens pane opened.' : `pAIrens pane could not be shown: ${r.reason}` }
+  })
+
+  on('command.run', { command: 'pairens-help' }, async $ => {
+    const tab = await read($, tabAtom)
+    await showHelp($, tab || 'user')
+    await $.ui.open({ id: PANE, title: 'pAIrens' })
+    return { text: 'pAIrens help is in the REPL pane.' }
   })
 
   on('command.run', { command: 'pairens-mode' }, async ($, e) => {
@@ -609,6 +798,13 @@ export const register: Register = on => {
     return { decision: 'ask', reason: `pAIrens (ask mode): Claude wants to pick restart ${input.restart} in debugger ${input.debugger}` }
   }).catch(() => ({ decision: 'ask', reason: 'pAIrens could not check this restart' }))
 
+  // "open in Claude's browser": the press allows the one open it asked for.
+  // Only the exact pAIrens page address, within the window, once, on the main
+  // loop, and never past an organization's block. Every other call is left to
+  // the session's own rules and prompts.
+  on('tool.check', { tool: 'mcp__Claude_Browser__preview_start' }, allowPressedBrowserOpen)
+  on('tool.check', { tool: 'mcp__Claude_Browser__navigate' }, allowPressedBrowserOpen)
+
   on('tool.check', { tool: 'mcp__pairens__history' }, allowRead)
   on('tool.check', { tool: 'mcp__pairens__job_result' }, allowRead)
   on('tool.check', { tool: 'mcp__pairens__status' }, allowRead)
@@ -707,13 +903,84 @@ export const register: Register = on => {
 
   // The pane keeps its own window: the editor and controls stay pinned at the
   // bottom, and a scroll over the pane moves through the history instead.
-  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const all = await read($, entriesAtom)
-    const selected = await read($, tabAtom)
-    const count = all.filter(x => x.session === selected).length
-    const step = Math.sign(e.by) * Math.max(1, Math.round(Math.abs(e.by) / 3))
-    await update($, scrollBackAtom, n => Math.min(Math.max(0, count - 1), Math.max(0, (n ?? 0) - step)))
+  // The REPL is part of the pane's height, so the pane's own scrolling moves
+  // it: every move goes through. The classic view (VS Code, or after the REPL
+  // faulted) keeps a fixed window of its own, so the person's scrolling also
+  // steps it through the history, entry by entry.
+  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    // `origin` is the engine's word; read it warily, as a test's raise may lack it.
+    if (e.origin?.kind === 'person') {
+      const all = await read($, entriesAtom)
+      const selected = await read($, tabAtom)
+      const count = all.filter(x => x.session === selected).length
+      const step = Math.sign(e.by) * Math.max(1, Math.round(Math.abs(e.by) / 3))
+      await update($, scrollBackAtom, n => Math.min(Math.max(0, count - 1), Math.max(0, (n ?? 0) - step)))
+    }
+    return next(e)
+  })
+
+  // What the REPL Client asks of the hooks: an eval, the clipboard to paste,
+  // or text to copy. Its posts are input from code: checked before use.
+  on('ui.message', { requestId: PANE }, async ($, e) => {
+    const data = e.data as { type?: unknown; code?: unknown; id?: unknown; text?: unknown; session?: unknown; prefix?: unknown; token?: unknown } | null
+    if (!data || typeof data !== 'object') return {}
+    if (data.type === 'eval' && typeof data.code === 'string') {
+      const all = await read($, entriesAtom)
+      const sessions = new Set(['user', ...all.map(x => x.session)])
+      const tab = await read($, tabAtom)
+      evalIn($, sessions.has(tab) ? tab : 'user', data.code)
+    } else if (data.type === 'paste' && typeof data.id === 'number') {
+      // A Client gets Cmd+V as a key, never the clipboard's text: read it here.
+      const id = data.id
+      const r = await $.process.run(['pbpaste']).catch(() => null)
+      if (!r || r.exitCode !== 0) $.ui.toast('pAIrens could not read the clipboard')
+      await update($, pasteAtom, () => ({ id, text: r?.exitCode === 0 ? r.stdout : '' }))
+    } else if (data.type === 'copy' && typeof data.text === 'string') {
+      const r = await $.ui.copy({ text: data.text, surface: e.surface })
+      if (!r.isCopied) $.ui.toast(`pAIrens could not copy: ${r.reason}`)
+    } else if (data.type === 'end') {
+      void toEnd($)
+    } else if (data.type === 'complete' && typeof data.id === 'number' && typeof data.prefix === 'string') {
+      // Tab: ask the image what the prefix could complete to, in the shown session.
+      const id = data.id
+      const prefix = data.prefix.slice(0, 200)
+      const all = await read($, entriesAtom)
+      const tab = await read($, tabAtom)
+      const session = tab === 'user' || all.some(x => x.session === tab) ? tab : 'user'
+      // No helper started (yet): nothing to offer, rather than waiting on it.
+      const r = socketPath
+        ? await helper<{ items?: Completion[] }>($, '/complete', { session, prefix }).catch(() => ({ items: [] }))
+        : { items: [] }
+      await update($, completionAtom, () => ({ id, items: plain(r.items ?? []).slice(0, 60) }))
+    } else if (data.type === 'describe' && typeof data.id === 'number' && typeof data.token === 'string') {
+      // Option-click: ask the image what the token names, in the shown session.
+      const id = data.id
+      const token = data.token.slice(0, 300)
+      const all = await read($, entriesAtom)
+      const tab = await read($, tabAtom)
+      const session = tab === 'user' || all.some(x => x.session === tab) ? tab : 'user'
+      const r = socketPath
+        ? await helper<{ description?: Description | null }>($, '/describe', { session, token }).catch(() => ({ description: null }))
+        : { description: null }
+      await update($, describedAtom, () => ({ id, description: r.description ? plain(r.description) : null }))
+    } else if (data.type === 'tab' && typeof data.session === 'string') {
+      const all = await read($, entriesAtom)
+      const name = data.session
+      if (name === 'user' || all.some(x => x.session === name)) {
+        await update($, tabAtom, () => name)
+        await update($, scrollBackAtom, () => 0)
+        void toEnd($)
+      }
+    }
     return {}
+  })
+
+  // The REPL Client failed: say why, and draw the classic view on that surface
+  // until the next reload.
+  on('ui.fault', { requestId: PANE }, async ($, e, next) => {
+    await update($, replFaultAtom, () => ({ surface: e.surface, reason: e.reason }))
+    $.ui.toast(`pAIrens REPL failed (${e.phase}): ${e.reason}. Showing the classic view.`)
+    return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -733,7 +1000,12 @@ export const register: Register = on => {
       const { Text } = $.ui.resolve(e)
       return <Text>pAIrens needs a surface with text input (desktop or terminal).</Text>
     }
-    const { Box, Text, Button, Input } = $.ui.resolve(e)
+    const els = $.ui.resolve(e)
+    const { Box, Text, Button, Input, Select } = els
+    // Desktop and terminal draw the REPL as a Client (hooks/repl.tsx); VS Code
+    // has no Client, and a Client that failed here falls back the same way.
+    const fault = await read($, replFaultAtom)
+    const Client = 'Client' in els && fault?.surface !== e.surface ? els.Client : undefined
 
     const tabBuild = status.cljsSessions?.[selected]
     const statusLine = status.connected
@@ -747,16 +1019,7 @@ export const register: Register = on => {
           ? '◌ starting pAIrens…'
           : `○ not connected${status.error ? ` (${status.error})` : ''}`
 
-    const evalHere = (code: string) => {
-      if (!code.trim()) return
-      void update($, scrollBackAtom, () => 0)
-      // "pairens: <text>" is a question for Claude, not Lisp.
-      const question = MESSAGE_PREFIX.test(code) ? code.replace(MESSAGE_PREFIX, '').trim() : null
-      const sent = question
-        ? helper($, '/api/v1/ask', { session: selected, text: question })
-        : helper($, '/eval', { session: selected, code, origin: 'user', timeoutMs: 0 })
-      void sent.catch(err => $.ui.toast(`pAIrens: ${String(err)}`))
-    }
+    const evalHere = (code: string) => evalIn($, selected, code)
 
     // Text in the pane can't be selected, so entries carry copy/edit buttons.
     const copy = (text: string) =>
@@ -818,12 +1081,33 @@ export const register: Register = on => {
       )
     })
 
+    const tabsProps: TabsProps = { view: 'tabs', session: selected, sessions }
+    const replProps: ReplProps = {
+      prompt: `${pkg}>`,
+      session: selected,
+      entries: plain(newestThatFit(shown)),
+      history: shown.filter(x => x.kind === 'eval' && x.origin === 'user').map(x => x.text).slice(-100),
+      paneFocused: e.props.isFocused,
+      paste: await read($, pasteAtom),
+      completion: await read($, completionAtom),
+      described: await read($, describedAtom),
+    }
+
     return (
-      <Box flexDirection="column" height={bodyRows}>
-        {/* history: fills the room above the editor, newest at the bottom */}
-        <Box key="history" flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden" justifyContent="flex-end" gap={1}>
-          {rows.length ? rows : [<Text key="empty" dimColor>Nothing evaluated in "{selected}" yet. Try typing: pairens: hello!</Text>]}
-        </Box>
+      // The classic view keeps a fixed window; the REPL is the pane's own height.
+      <Box flexDirection="column" height={Client ? undefined : bodyRows}>
+        {Client ? (
+          // The REPL: tabs, history and input as one transcript, as tall as it
+          // is; the pane scrolls it and the hooks keep it at the end.
+          <Box key="history" flexDirection="column">
+            <Client key="repl" module="./repl.tsx" props={replProps} />
+          </Box>
+        ) : (
+          // history: fills the room above the editor, newest at the bottom
+          <Box key="history" flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden" justifyContent="flex-end" gap={1}>
+            {rows.length ? rows : [<Text key="empty" dimColor>Nothing evaluated in "{selected}" yet. Try typing: pairens: hello!</Text>]}
+          </Box>
+        )}
 
         {/* pinned: debugger, editor, then status and controls */}
         <Box key="footer" flexDirection="column" flexShrink={0} gap={1} paddingTop={1} paddingBottom={1}>
@@ -847,7 +1131,7 @@ export const register: Register = on => {
               </Box>
             </Box>
           ))}
-          {shown.length > 1 ? (
+          {!Client && shown.length > 1 ? (
             <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
               <Button
                 key="older"
@@ -871,15 +1155,14 @@ export const register: Register = on => {
             </Box>
           ) : null}
 
+          {Client ? null : (
           <Box flexDirection="column">
-            <Text mono bold>
-              {pkg}&gt;
-            </Text>
             <Input
               key="repl"
+              label={`${pkg}>`}
               value={draft}
               placeholder="(+ 1 2)"
-              submitLabel="⏎"
+              submitLabel="eval"
               rows={3}
               autoFocus
               onInput={value => void update($, draftAtom, () => value)}
@@ -889,7 +1172,28 @@ export const register: Register = on => {
               }}
             />
           </Box>
+          )}
 
+          {/* the session tabs sit right on the connection line */}
+          <Box flexDirection="column">
+          {Client ? (
+            <Client key="tabs" module="./repl.tsx" props={tabsProps} />
+          ) : (
+            <Box key="tabs" flexDirection="row" gap={1} flexWrap="wrap">
+              {sessions.map(name => (
+                <Button
+                  key={`tab-${name}`}
+                  variant={name === selected ? 'primary' : 'secondary'}
+                  onPress={() => {
+                    void update($, tabAtom, () => name)
+                    void update($, scrollBackAtom, () => 0)
+                  }}
+                >
+                  {name}
+                </Button>
+              ))}
+            </Box>
+          )}
           <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
             <Text dimColor={!status.connected} color={status.connected ? 'success' : undefined}>
               {statusLine}
@@ -909,6 +1213,16 @@ export const register: Register = on => {
                 ↗ open in browser
               </Button>
             ) : null}
+            {status.browserUrl && e.surface === 'desktop' ? (
+              // Only the desktop app has a browser pane of Claude's.
+              <Button key="claude-browser" plain dimColor onPress={() => void openInClaudesBrowser($).then(t => $.ui.toast(t))}>
+                ↗ open in Claude's browser
+              </Button>
+            ) : null}
+            <Button key="clear" plain dimColor onPress={() => void clearSession($, selected)}>
+              ⌫ clear "{selected}"
+            </Button>
+          </Box>
           </Box>
 
           {status.connected && status.shadow?.builds.length ? (
@@ -972,32 +1286,22 @@ export const register: Register = on => {
             </Box>
           ) : null}
 
-          <Box flexDirection="row" gap={1} flexWrap="wrap">
-            <Text dimColor>Claude:</Text>
-            {(['ask', 'auto', 'read-only'] as const).map(m => (
-              <Button key={`mode-${m}`} variant={m === mode ? 'primary' : 'secondary'} onPress={() => void setMode($, m)}>
-                {m}
-              </Button>
-            ))}
-          </Box>
-
-          <Box flexDirection="row" gap={1} flexWrap="wrap">
-            {sessions.map(name => (
-              <Button
-                key={`tab-${name}`}
-                variant={name === selected ? 'primary' : 'secondary'}
-                onPress={() => {
-                  void update($, tabAtom, () => name)
-                  void update($, scrollBackAtom, () => 0)
-                }}
-              >
-                {name}
-              </Button>
-            ))}
-            <Button key="clear" dimColor onPress={() => void clearSession($, selected)}>
-              clear
+          {/* the permission mode picker, and on the same line, About */}
+          <Box flexDirection="row" gap={2} alignItems="center" flexWrap="wrap">
+            <Select
+              key="mode"
+              label="Claude's permission mode"
+              value={mode}
+              options={MODE_OPTIONS}
+              onSelect={value => {
+                if (isMode(value)) void setMode($, value)
+              }}
+            />
+            <Button key="about" plain dimColor onPress={() => void openAbout($).then(t => $.ui.toast(t))}>
+              ⓘ About pAIrens
             </Button>
           </Box>
+
         </Box>
       </Box>
     )

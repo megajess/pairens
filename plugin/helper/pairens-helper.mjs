@@ -498,6 +498,26 @@ const jobs = new Map()
 // across helper restarts (each mod reload starts a new helper).
 let jobCounter = Number(args['job-start']) || 0
 
+/** What PREFIX could complete to in SESSION: { items: [{ text, kind, args }] }, empty when not connected. */
+async function complete(session, prefix) {
+  if (typeof prefix !== 'string' || !prefix || !conn) return { items: [] }
+  try {
+    return { items: await conn.complete(session, prefix) }
+  } catch {
+    return { items: [] }
+  }
+}
+
+/** What TOKEN names in SESSION: { description: { name, kind, args, doc } | null }. */
+async function describe(session, token) {
+  if (typeof token !== 'string' || !token || !conn) return { description: null }
+  try {
+    return { description: await conn.describe(session, token.slice(0, 300)) }
+  } catch {
+    return { description: null }
+  }
+}
+
 function startEval({ session = 'user', code, origin = 'user' }) {
   const id = `j${++jobCounter}`
   const entry = { id, session, origin, kind: 'eval', text: code, status: 'running', at: Date.now() }
@@ -564,6 +584,8 @@ const api = {
     if (!job) throw new Error(`no job ${id}`)
     return waitFor(job, Number(timeoutMs))
   },
+  'POST /api/v1/complete': async ({ session = 'user', prefix }) => complete(String(session || 'user'), prefix),
+  'POST /api/v1/describe': async ({ session = 'user', token }) => describe(String(session || 'user'), token),
   'POST /api/v1/mode': async ({ mode: wanted }) => {
     if (!MODES.has(wanted)) throw new Error('mode must be ask, auto or read-only')
     emit({ type: 'set-mode', mode: wanted }) // the mod owns the mode and confirms it
@@ -603,6 +625,8 @@ const internal = {
     if (!job) throw new Error(`no job ${id}`)
     return waitFor(job, Number(timeoutMs))
   },
+  'POST /complete': async ({ session = 'user', prefix }) => complete(session, prefix),
+  'POST /describe': async ({ session = 'user', token }) => describe(session, token),
   'POST /classify': async ({ session = 'user', code }) => {
     if (!conn) return { readOnly: false, reason: 'not connected' }
     return { readOnly: (await conn.classify(session, code)) === true }
@@ -699,6 +723,7 @@ const STATIC = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/app.css': ['app.css', 'text/css; charset=utf-8'],
+  '/theme.js': ['theme.js', 'text/javascript; charset=utf-8'],
   '/vendor/editor.js': ['vendor/editor.js', 'text/javascript; charset=utf-8'],
 }
 

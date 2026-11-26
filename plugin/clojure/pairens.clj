@@ -201,6 +201,82 @@
                    :else false)))))
      (catch Throwable _ false))))
 
+;;; ------------------------------------------------------------------
+;;; Completion: what the REPL's Tab offers
+
+(def ^:private special-form-names
+  '[def if do let quote var fn loop recur throw try catch finally monitor-enter monitor-exit new set!])
+
+(defn- completion-entry
+  "[text kind arglists] for name TEXT mapped to V (a Var, a Class, or nil for a special form)."
+  [text v]
+  (cond
+    (var? v) (let [m (meta v)
+                   kind (cond (:macro m) "macro"
+                              (fn? (try @v (catch Throwable _ nil))) "function"
+                              :else "variable")
+                   args (:arglists m)]
+               [text kind (if args (truncated (str/join " " (map pr-str args)) 80) "")])
+    (class? v) [text "class" ""]
+    :else [text "special" ""]))
+
+(defn completions
+  "Print as JSON what PREFIX could complete to in namespace NS-NAME: a list of
+  [text kind arglists], shortest and then alphabetical first, at most 60.
+  PREFIX may be alias/name or ns/name; an alias on its own completes to alias/."
+  [prefix ns-name]
+  (print-json
+   (try
+     (let [ns (or (find-ns (symbol (str ns-name))) (find-ns 'user) *ns*)
+           slash (str/last-index-of prefix "/")
+           qualified? (and slash (pos? slash))
+           qualifier (if qualified? (subs prefix 0 (inc slash)) "")
+           stem (if qualified? (subs prefix (inc slash)) prefix)
+           starts? #(str/starts-with? % stem)
+           found (if qualified?
+                   (let [alias (symbol (subs qualifier 0 (dec (count qualifier))))
+                         target (or (get (ns-aliases ns) alias) (find-ns alias))]
+                     (for [[sym v] (when target (ns-publics target))
+                           :when (starts? (str sym))]
+                       (completion-entry (str qualifier sym) v)))
+                   (concat
+                    (for [[sym v] (ns-map ns) :when (starts? (str sym))]
+                      (completion-entry (str sym) v))
+                    (for [sym special-form-names :when (starts? (str sym))]
+                      (completion-entry (str sym) nil))
+                    (for [[alias _] (ns-aliases ns) :when (starts? (str alias))]
+                      [(str alias "/") "namespace" ""])))]
+       (->> found
+            (reduce (fn [m [text :as e]] (if (contains? m text) m (assoc m text e))) {})
+            vals
+            (sort-by (juxt (comp count first) first))
+            (take 60)
+            vec))
+     (catch Throwable _ []))))
+
+;;; ------------------------------------------------------------------
+;;; Describing a symbol: what the REPL's Option-click shows
+
+(defn describe
+  "Print as JSON what TOKEN names in namespace NS-STR, for the REPL:
+  [name kind arglists doc], or null when it names nothing. Special forms
+  come from clojure.repl's own notes on them."
+  [token ns-str]
+  (print-json
+   (try
+     (let [ns (or (find-ns (symbol (str ns-str))) (find-ns 'user) *ns*)
+           sym (symbol (str/replace token #"^[#'`~@^]+" ""))
+           v (ns-resolve ns sym)]
+       (cond
+         (var? v) (let [m (meta v)
+                        [text kind args] (completion-entry (str (:name m)) v)]
+                    [(if (= (:ns m) ns) text (str (ns-name (:ns m)) "/" text)) kind args (or (:doc m) "")])
+         (class? v) [(.getName ^Class v) "class" "" ""]
+         (special-symbol? sym) (let [m (#'clojure.repl/special-doc sym)]
+                                 [(str sym) "special" (str/join " " (map pr-str (:forms m))) (or (:doc m) "")])
+         :else nil))
+     (catch Throwable _ nil))))
+
 (defn implementation
   "Print the Clojure version as JSON for the helper's status line."
   []

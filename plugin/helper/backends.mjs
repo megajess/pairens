@@ -10,6 +10,8 @@
 //   evaluate(session, code)   → { status: 'ok', output, values, package }
 //                              | { status: 'error', error, output, package }
 //   classify(session, code)   → true when the code only inspects
+//   complete(session, prefix) → [{ text, kind, args }] PREFIX could complete to
+//   describe(session, token)  → { name, kind, args, doc } for what TOKEN names, or null
 //   deliver(id, answer)       → true when the reply printed in an editor REPL
 //   takeOutbox()              → (pairens claude) calls, waiting up to ~20 s
 //   sessions()                → [{ name, package }]
@@ -29,6 +31,20 @@ import { EventEmitter } from 'node:events'
 import { SwankClient } from './swank.mjs'
 import { NreplClient } from './nrepl.mjs'
 import { str } from './sexp.mjs'
+
+/** [[text, kind, args], ...] from either side → [{ text, kind, args }]; anything else → []. */
+const asCompletions = r =>
+  Array.isArray(r)
+    ? r
+        .filter(x => Array.isArray(x) && typeof x[0] === 'string')
+        .map(([text, kind, args]) => ({ text, kind: String(kind ?? ''), args: String(args ?? '') }))
+    : []
+
+/** [name, kind, args, doc] from either side → { name, kind, args, doc }; anything else → null. */
+const asDescription = r =>
+  Array.isArray(r) && typeof r[0] === 'string'
+    ? { name: r[0], kind: String(r[1] ?? ''), args: String(r[2] ?? ''), doc: String(r[3] ?? '') }
+    : null
 
 const forward = (from, to, events) => events.forEach(name => from.on(name, (...a) => to.emit(name, ...a)))
 
@@ -70,6 +86,16 @@ export class SwankBackend extends EventEmitter {
   async classify(session, code) {
     const r = await this.client.rex(`(pairens::read-only-code-p ${str(session)} ${str(code)})`, { pkg: 'PAIRENS' })
     return !(Array.isArray(r) && r.length === 0)
+  }
+
+  async complete(session, prefix) {
+    const r = await this.client.rex(`(pairens::completions ${str(session)} ${str(prefix)})`, { pkg: 'PAIRENS' })
+    return asCompletions(r)
+  }
+
+  async describe(session, token) {
+    const r = await this.client.rex(`(pairens::describe-symbol ${str(session)} ${str(token)})`, { pkg: 'PAIRENS' })
+    return asDescription(r)
   }
 
   async deliver(id, answer) {
@@ -224,6 +250,18 @@ export class NreplBackend extends EventEmitter {
   classify(session, code) {
     if (this.cljs.has(session)) return this.call('pairens internal', `(pairens/read-only-cljs-code? ${clj(code)})`)
     return this.call('pairens internal', `(pairens/read-only-code? ${clj(code)} ${clj(this.namespaces.get(session) ?? 'user')})`)
+  }
+
+  async complete(session, prefix) {
+    // ClojureScript sessions complete nothing yet: their names live in the build, not this JVM.
+    if (this.cljs.has(session)) return []
+    const r = await this.call('pairens internal', `(pairens/completions ${clj(prefix)} ${clj(this.namespaces.get(session) ?? 'user')})`)
+    return asCompletions(r)
+  }
+
+  async describe(session, token) {
+    if (this.cljs.has(session)) return null
+    return asDescription(await this.call('pairens internal', `(pairens/describe ${clj(token)} ${clj(this.namespaces.get(session) ?? 'user')})`))
   }
 
   /** Notes a session entering ClojureScript ([:selected :app]) or leaving it (:cljs/quit). */
